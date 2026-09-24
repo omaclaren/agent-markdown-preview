@@ -17,6 +17,8 @@ By default the command opens a small **session index** for the directory. It lis
 - Clicking a session opens its own live preview in a separate tab. Clicking it again returns to that tab.
 - **All sessions (merged)** shows the latest finished response from any session. Each response is labelled with its source, e.g. `Claude Code 3f2a · 14:02`.
 - Every preview updates when a turn finishes. The page's history controls step back through earlier responses or file versions.
+- Keyboard: **Option+←/→** steps through history; add **Shift** to jump to the oldest or latest revision.
+- **Restarts don't strand tabs.** Each preview keeps its address (port and token) across restarts, and previews that were open are brought back when the index restarts. Open tabs reconnect by themselves. While the preview isn't running, a tab says so beside its controls. Addresses are remembered in `~/.agent-markdown-preview/servers.json` (private to you; `AGENT_MARKDOWN_PREVIEW_HOME` overrides the location). If a remembered port has been taken, the preview picks a new one and you reopen it from the index.
 
 | Option | |
 |---|---|
@@ -64,6 +66,8 @@ npm test
 
 `scripts/extract-render-core.cjs` uses the TypeScript compiler to copy exactly the top-level declarations the browser renderer depends on, verbatim and in their original order. It replaces Pi's `Theme` type with a structural `PreviewTheme`, which Pi's `Theme` still satisfies. It currently takes 94 of index.ts's 236 declarations.
 
+`src/shared/browser-watch-server.js` and `src/client/watch-controls.css` currently come from pi-markdown-preview's `watch-page-improvements` branch (shortcut, status line, optional fixed port/token), pending a pi-markdown-preview release. Every file in `src/shared` and `src/client` must stay identical to pi-markdown-preview.
+
 `test/equivalence.test.mjs` renders pi-markdown-preview's own test fixtures, plus a code file, in both themes. It checks that the HTML is **byte-identical** to what the original produces, using a temporary copy of `../pi-markdown-preview` (or `AMP_REFERENCE`). The test is skipped if the reference or pandoc is missing.
 
 The long-term plan is the reverse direction: pi-markdown-preview (and Pi Studio's preview) import this package's renderer, and the extraction script goes away.
@@ -71,7 +75,6 @@ The long-term plan is the reverse direction: pi-markdown-preview (and Pi Studio'
 ## Scope and limitations
 
 - Browser only. Terminal image previews, PDF export and Pi theme colours stay in pi-markdown-preview.
-- The watch server is shared verbatim with pi-markdown-preview. Its expired-token message still mentions `/preview-browser`.
 - OpenCode stores sessions in SQLite and Gemini/agy logs have not been examined. Neither is supported yet.
 
 ## Development

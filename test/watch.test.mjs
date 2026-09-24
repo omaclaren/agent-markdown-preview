@@ -12,7 +12,7 @@ const line = entry => JSON.stringify(entry) + "\n";
 const iso = offsetMs => new Date(Date.now() + offsetMs).toISOString();
 const page = async url => (await fetch(url)).text();
 const claudeAnswer = (id, text, time) => line({ type: "assistant", timestamp: time, message: { id, stop_reason: "end_turn", content: [{ type: "text", text }] } });
-const fast = { rescanMs: 100, tailIntervalMs: 40 };
+const fast = { rescanMs: 100, tailIntervalMs: 40, stateDir: null };
 
 async function waitFor(check, label, timeoutMs = 10_000) {
 	const started = Date.now();
@@ -128,12 +128,12 @@ test("session index lists sessions with titles and opens per-session and merged 
 
 test("pinned session and waiting page", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
-	const empty = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("dark"), agents: ["codex"] });
+	const empty = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("dark"), agents: ["codex"], stateDir: null });
 	t.after(() => empty.close());
 	assert.match(await page(empty.url), /Waiting for the next completed response from Codex/);
 	const session = join(f.base, "pinned.jsonl");
 	writeFileSync(session, line({ type: "session", cwd: f.cwd }) + line({ type: "message", id: "a", timestamp: iso(-1_000), message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Pinned session" }] } }));
-	const pinned = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("dark"), sessionPath: session });
+	const pinned = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("dark"), sessionPath: session, stateDir: null });
 	t.after(() => pinned.close());
 	assert.match(pinned.label, /^Pi pinn/);
 	const html = await page(pinned.url);
@@ -146,7 +146,7 @@ test("file watch re-renders on change", { skip, timeout: 30_000 }, async t => {
 	const file = join(dir, "notes.md");
 	writeFileSync(file, "# First\n\nSome *text*.\n");
 	const revisions = [];
-	const watch = await startFileWatch({ filePath: file, style: styleForMode("light"), intervalMs: 50, debounceMs: 20, onRendered: r => revisions.push(r) });
+	const watch = await startFileWatch({ filePath: file, style: styleForMode("light"), intervalMs: 50, debounceMs: 20, stateDir: null, onRendered: r => revisions.push(r) });
 	t.after(() => watch.close());
 	assert.equal(watch.label, "notes.md");
 	assert.match(await page(watch.url), /First/);
@@ -170,4 +170,58 @@ test("previews update without an onRendered callback (as the CLI runs them)", { 
 	urls.push(merged.url);
 	appendFileSync(file, claudeAnswer("m2", "Second answer", iso(1_000)));
 	for (const url of urls) await waitFor(async () => /Second answer/.test(await page(url)), `update at ${url}`);
+});
+
+test("restarts reuse remembered addresses and restore previews that were open", { skip, timeout: 60_000 }, async t => {
+	const f = fixture();
+	const stateDir = join(f.base, "state");
+	const file = join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl");
+	writeFileSync(file, claudeAnswer("m1", "Before restart", iso(-60_000)));
+	const options = { cwd: f.cwd, roots: f.roots, style: styleForMode("light"), rescanMs: 100, tailIntervalMs: 40, stateDir };
+	const openView = async (index, id) => (await fetch(new URL(`/open/${id}?token=${new URL(index.url).searchParams.get("token")}`, index.url), { redirect: "manual" })).headers.get("location");
+
+	const first = await startSessionIndex(options);
+	const token = new URL(first.url).searchParams.get("token");
+	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, first.url))).json()).sessions;
+	const sessionUrl = await openView(first, session.id);
+	const mergedUrl = await openView(first, "all");
+	await first.close();
+
+	const second = await startSessionIndex(options);
+	t.after(() => second.close());
+	assert.equal(second.url, first.url, "the index comes back at the same address");
+	// Views open last time are restored without visiting the index, so old tabs reconnect.
+	await waitFor(async () => { try { return /Before restart/.test(await page(sessionUrl)); } catch { return false; } }, "restored session preview");
+	assert.match(await page(mergedUrl), /Before restart/);
+	assert.equal(await openView(second, session.id), sessionUrl, "same preview address after a restart");
+	appendFileSync(file, claudeAnswer("m2", "After restart", iso(1_000)));
+	await waitFor(async () => /After restart/.test(await page(sessionUrl)), "restored preview keeps updating");
+
+	// A remembered port taken by something else falls back to a new address.
+	const other = await startSessionIndex({ ...options, stateDir: join(f.base, "state-2") });
+	t.after(() => other.close());
+	const { createSlotStore } = await import("../dist/slots.js");
+	const store = createSlotStore(join(f.base, "state-2"));
+	const key = `${realpathSync(f.cwd)}|index`;
+	const port = Number(new URL(second.url).port);
+	store.set(key, { port, token: "x".repeat(40) });
+	const fallback = await startSessionIndex({ ...options, stateDir: join(f.base, "state-2"), cwd: f.cwd });
+	t.after(() => fallback.close());
+	assert.notEqual(new URL(fallback.url).port, String(port));
+	assert.equal(store.get(key).port, Number(new URL(fallback.url).port), "the new address is remembered");
+});
+
+test("file watch comes back at the same address after a restart", { skip, timeout: 30_000 }, async t => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "amp-file-")));
+	const file = join(dir, "notes.md");
+	writeFileSync(file, "# Notes\n");
+	const stateDir = join(dir, "state");
+	const first = await startFileWatch({ filePath: file, style: styleForMode("light"), stateDir });
+	const url = first.url;
+	await first.close();
+	const second = await startFileWatch({ filePath: file, style: styleForMode("light"), stateDir });
+	t.after(() => second.close());
+	assert.equal(second.url, url);
+	assert.match(await page(url), /Notes/);
+	assert.match(await page(url), /Agent Markdown Preview<\/title>/);
 });

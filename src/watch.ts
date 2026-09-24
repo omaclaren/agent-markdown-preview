@@ -1,7 +1,7 @@
 // Browser views: a session index for a directory, one watch page per session,
 // a merged view of all sessions, and single-file watching. Rendering and the
 // watch page are pi-markdown-preview's; this module decides what to show when.
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, unwatchFile, watchFile } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -13,6 +13,11 @@ import {
 } from "./render.js";
 import { AGENT_LABELS, AGENTS, detectAgent, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
+import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
+
+const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run agent-markdown-preview again for a fresh link." };
+/** Remembered addresses make restarted previews reconnect; `null` disables. */
+const slotStore = (stateDir: string | null | undefined): SlotStore | null => stateDir === null ? null : createSlotStore(stateDir ?? defaultStateDir());
 
 /** Same result as pi-markdown-preview's getPreviewStyle() without a Pi theme. */
 export function styleForMode(mode: ThemeMode): PreviewStyle {
@@ -49,6 +54,8 @@ interface ViewOptions {
 	caption?: (response: AgentResponse) => string | null;
 	log: (message: string) => void;
 	onRendered?: (response: AgentResponse, revision: number) => void;
+	slots: SlotStore | null;
+	slotKey: string;
 }
 
 /** One watch page following a stream of responses. Same key = revise in place. */
@@ -61,7 +68,9 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	const render = async (response: AgentResponse) => (await renderPreviewHtmlDocument(markdownFor(response), options.style, options.cwd, false, options.fontSizePx)).html;
 	const initialHtml = options.initial ? await render(options.initial)
 		: buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx);
-	const server = await createBrowserWatchServer(initialHtml, options.cwd, { initialDocumentIsHistory: Boolean(options.initial), sourceLabel: options.label });
+	const server = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
+		initialDocumentIsHistory: Boolean(options.initial), sourceLabel: options.label, port, token, ...PAGE_TEXT,
+	}));
 	let shownKey = options.initial?.key ?? null, shownMarkdown = options.initial?.markdown ?? "", closed = false;
 	let queue = Promise.resolve();
 	return {
@@ -104,6 +113,8 @@ interface CommonOptions {
 	recentMs?: number;
 	log?: (message: string) => void;
 	onRendered?: (response: AgentResponse, revision: number) => void;
+	/** Where preview addresses are remembered (default ~/.agent-markdown-preview; null: don't). */
+	stateDir?: string | null;
 }
 
 async function openMonitor(options: CommonOptions & { sessionPath?: string; sessionAgent?: AgentKind }) {
@@ -124,8 +135,9 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 const latestOf = (sessions: SessionState[]) => sessions.map(s => s.latest).filter((r): r is AgentResponse => r !== null).reduce<AgentResponse | null>((best, r) => !best || r.time >= best.time ? r : best, null);
 
 /** Creates the merged view over all monitored sessions (or one pinned session). */
-async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, captions = true) {
+async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string, captions = true) {
 	return createResponseView({
+		slots: slotStore(options.stateDir), slotKey,
 		cwd: base.cwd, style: options.style, fontSizePx: base.fontSizePx, label, initial: latestOf(monitor.sessions()),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captions ? response => {
@@ -144,7 +156,7 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 	const base = await openMonitor(options);
 	const pinned = options.sessionPath ? base.monitor.sessions()[0] : null;
 	const label = pinned ? sessionLabel(pinned) : `All sessions · ${basename(base.cwd) || base.cwd}`;
-	const view = await mergedView(base.monitor, base, options, label, !pinned);
+	const view = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, !pinned);
 	base.monitor.onResponse((_session, response, fresh) => { if (fresh || response.key === view.shownKey) view.show(response); });
 	return { url: view.url, label, async close() { base.monitor.close(); await view.close(); } };
 }
@@ -159,9 +171,11 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 	const base = await openMonitor(options);
 	const { cwd, monitor } = base;
 	const log = options.log ?? (() => {});
-	const token = randomBytes(24).toString("base64url");
+	const slots = slotStore(options.stateDir);
+	let token = "";
 	const views = new Map<string, Promise<ResponseView>>();
 	const label = `${basename(cwd) || cwd}`;
+	const viewPrefix = `${cwd}|index-view|`;
 
 	function view(id: string): Promise<ResponseView> | null {
 		const existing = views.get(id);
@@ -170,8 +184,9 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (id !== "all" && !session) return null;
 		const created = session
 			? createResponseView({ cwd, style: options.style, fontSizePx: base.fontSizePx, label: sessionLabel(session), initial: session.latest,
-				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered })
-			: mergedView(monitor, base, options, `All sessions · ${label}`);
+				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
+				slots, slotKey: `${viewPrefix}session|${session.path}` })
+			: mergedView(monitor, base, options, `All sessions · ${label}`, `${viewPrefix}all`);
 		views.set(id, created);
 		created.catch(() => views.delete(id));
 		return created;
@@ -182,7 +197,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		}
 	});
 
-	const tokenMatches = (value: string | null) => typeof value === "string" && value.length === token.length && timingSafeEqual(Buffer.from(value), Buffer.from(token));
+	const tokenMatches = (value: string | null) => token.length > 0 && typeof value === "string" && value.length === token.length && timingSafeEqual(Buffer.from(value), Buffer.from(token));
 	let port = 0;
 	const server = createServer(async (req, res) => {
 		const send = (status: number, body: string, type = "text/plain; charset=utf-8", extra: Record<string, string> = {}) => {
@@ -218,8 +233,21 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 			if (!res.headersSent) send(500, "Could not open that view: " + errorMessage(error));
 		}
 	});
-	await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", done); });
+	await startAtSlot(slots, `${cwd}|index`, (slotPort, slotToken) => new Promise<void>((done, fail) => {
+		const onError = (error: Error) => { server.off("listening", onListening); fail(error); };
+		const onListening = () => { server.off("error", onError); token = slotToken; done(); };
+		server.once("error", onError);
+		server.once("listening", onListening);
+		server.listen(slotPort, "127.0.0.1");
+	}));
 	port = (server.address() as { port: number }).port;
+	// Bring back previews that were open in the previous run, so their tabs
+	// reconnect on their own. Only sessions that are still followed.
+	for (const key of slots?.recent(viewPrefix, 24 * 60 * 60 * 1000) ?? []) {
+		const rest = key.slice(viewPrefix.length);
+		const id = rest === "all" ? "all" : rest.startsWith("session|") ? monitor.sessions().find(s => s.path === rest.slice("session|".length))?.id : undefined;
+		if (id) view(id)?.catch(error => log(`Could not restore a preview: ${errorMessage(error)}`));
+	}
 	return {
 		url: `http://127.0.0.1:${port}/?token=${token}`,
 		label: `sessions in ${label}`,
@@ -239,6 +267,8 @@ export interface FileWatchOptions {
 	debounceMs?: number;
 	log?: (message: string) => void;
 	onRendered?: (revision: number) => void;
+	/** Where preview addresses are remembered (default ~/.agent-markdown-preview; null: don't). */
+	stateDir?: string | null;
 }
 
 /** Re-renders a Markdown/LaTeX/code/diff file whenever it changes. */
@@ -254,7 +284,9 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 	const first = await snapshot();
 	const initial = await renderPreviewHtmlDocument(first.markdown, options.style, resourcePath, first.isLatex, fontSizePx);
 	const label = basename(path);
-	const server = await createBrowserWatchServer(initial.html, resourcePath, { initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true });
+	const server = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
+		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, port, token, ...PAGE_TEXT,
+	}));
 
 	let lastHash = first.contentHash, lastError: string | undefined, closed = false, inFlight = false, queued = false;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
