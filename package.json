@@ -1,0 +1,35 @@
+{
+	"name": "agent-markdown-preview",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Browser preview of coding-agent responses (Claude Code, Codex, Pi) and local Markdown/LaTeX/code files, with math, Mermaid and syntax highlighting.",
+	"type": "module",
+	"bin": {
+		"agent-markdown-preview": "dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/render.d.ts",
+			"import": "./dist/render.js"
+		}
+	},
+	"files": ["dist", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"typecheck": "tsc --noEmit",
+		"test": "npm run build && node --test",
+		"extract": "node scripts/extract-render-core.cjs ../pi-markdown-preview"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"micromark": "^4.0.2",
+		"yaml": "^2.9.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"typescript": "5.9.3"
+	}
+}
