@@ -1,8 +1,28 @@
 {
 	"name": "agent-markdown-preview",
 	"version": "0.1.0",
-	"private": true,
-	"description": "Browser preview of coding-agent responses (Claude Code, Codex, Pi) and local Markdown/LaTeX/code files, with math, Mermaid and syntax highlighting.",
+	"description": "Browser preview of coding-agent responses (Claude Code, Codex, Pi) and local Markdown, LaTeX, code and diff files, with math, syntax highlighting and Mermaid.",
+	"keywords": [
+		"claude-code",
+		"codex",
+		"pi",
+		"coding-agent",
+		"markdown",
+		"latex",
+		"mermaid",
+		"preview",
+		"pandoc",
+		"cli"
+	],
+	"homepage": "https://github.com/omaclaren/agent-markdown-preview#readme",
+	"bugs": {
+		"url": "https://github.com/omaclaren/agent-markdown-preview/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/omaclaren/agent-markdown-preview.git"
+	},
+	"license": "MIT",
 	"type": "module",
 	"bin": {
 		"agent-markdown-preview": "dist/cli.js"
@@ -22,12 +42,12 @@
 		"build": "node scripts/build.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "npm run build && node --test",
-		"extract": "node scripts/extract-render-core.cjs ../pi-markdown-preview"
+		"extract": "node scripts/extract-render-core.cjs ../pi-markdown-preview",
+		"prepublishOnly": "npm test"
 	},
 	"engines": {
-		"node": ">=20"
+		"node": ">=22"
 	},
-	"license": "MIT",
 	"dependencies": {
 		"micromark": "^4.0.2",
 		"yaml": "^2.9.0"

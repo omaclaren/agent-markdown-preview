@@ -1,91 +1,139 @@
 # agent-markdown-preview
 
-A browser preview of **coding-agent responses** and **local files**, with math, Mermaid diagrams, syntax highlighting and annotation markers. It works with Claude Code, Codex and Pi, and doesn't need any of them to be running inside it. It reads the session logs each agent already writes.
+Preview coding-agent responses and local Markdown, LaTeX, code and diff files in the browser, with math rendering, syntax highlighting, Mermaid diagrams and light/dark styling. It works alongside [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) and [Pi](https://pi.dev) by reading the session logs each agent already writes.
 
-The renderer is [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview)'s browser renderer, extracted so it no longer depends on Pi. Output is byte-identical (see "Keeping the renderer identical").
+## Screenshots
 
-## Use
+**Session index for a project:**
+
+![Session index](screenshots/index.png)
+
+**A response preview, following the system light/dark setting:**
+
+| Light | Dark |
+|:--:|:--:|
+| ![Light preview](screenshots/preview-light.png) | ![Dark preview](screenshots/preview-dark.png) |
+
+## Features
+
+- **Session index** — lists the recently active Claude Code, Codex and Pi sessions for a project with their titles, whether a turn is in progress and when each was last active. Sessions started later appear automatically.
+- **Live response previews** — each session opens in its own tab and updates when the agent finishes a turn. A merged view shows the latest response from any session, labelled by source.
+- **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
+- **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
+- **Rendering** — Pandoc-based Markdown and LaTeX with math, syntax highlighting, tables, Mermaid diagrams, local images and `[an: ...]` annotation markers, using the same renderer as [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview).
+- **Light and dark** — pages follow the system light/dark setting as it changes, or use a fixed theme.
+- **Restarts** — previews keep their local addresses, so open tabs reconnect when the command restarts.
+
+## Requirements
+
+- Node.js 22 or later
+- [Pandoc](https://pandoc.org/installing.html) (`brew install pandoc` on macOS). Set `PANDOC_PATH` if it is not on your `PATH`.
+- A web browser. Mermaid diagrams, the MathJax fallback for some equations and PDF figures load pinned modules from jsDelivr or unpkg the first time a page needs them, so those features need network access.
+
+agent-markdown-preview is developed and tested on macOS. It should also work on Linux, which has had less testing; Windows is untested.
+
+## Install
 
 ```bash
-agent-markdown-preview                 # in a project: index of its agent sessions
-agent-markdown-preview --merged        # one preview: latest response from any session here
-agent-markdown-preview notes.md        # follow a Markdown, LaTeX, code or diff file
+npm install -g agent-markdown-preview
 ```
 
-By default the command opens a small **session index** for the directory. It lists the recently active Claude Code, Codex and Pi sessions, most recent first, each with its title (the agent's own title, or the first prompt), whether it is working, and when it was last active. The list updates live, so sessions started later appear automatically.
+Or run it without installing:
 
-- Clicking a session opens its own live preview in a separate tab. Clicking it again returns to that tab.
-- **All sessions (merged)** shows the latest finished response from any session. Each response is labelled with its source, e.g. `Claude Code 3f2a · 14:02`.
-- Every response carries a small line saying where it came from, e.g. *Claude Code 3f2a · Review the hosting core · 14:02*.
-- Every preview updates when a turn finishes. The page's history controls step back through earlier responses or file versions.
-- Each preview starts with **recent history** from the logs: the last 10 finished responses (for the merged view, across all sessions, by time), with the newest shown. So the history is there as soon as a tab opens, and again after a restart. `--history <n>` changes the count (0–20; 0 = only the latest). File previews start with the current version only.
-- Keyboard: **Option+←/→** steps through history; add **Shift** to jump to the oldest or latest revision.
-- **Restarts don't strand tabs.** Each preview keeps its address (port and token) across restarts, and previews that were open are brought back when the index restarts. Open tabs reconnect by themselves, and a restart doesn't open a duplicate tab when an existing one reconnects. While the preview isn't running, a tab says so beside its controls. Addresses are remembered in `~/.agent-markdown-preview/servers.json` (private to you; `AGENT_MARKDOWN_PREVIEW_HOME` overrides the location). If a remembered port has been taken, the preview picks a new one and you reopen it from the index.
+```bash
+npx agent-markdown-preview
+```
 
-| Option | |
-|---|---|
-| `--merged` | Open the merged preview directly, without the index |
-| `--session <path>` | Preview one session log directly (agent detected from its path or first line) |
+## Usage
+
+Run the command in the project directory where you are working with an agent:
+
+| Command | Description |
+|---------|-------------|
+| `agent-markdown-preview` | Open the session index for the current directory |
+| `agent-markdown-preview --merged` | Open one preview showing the latest response from any session here |
+| `agent-markdown-preview --session <path>` | Preview a single session log |
+| `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
+
+| Option | Description |
+|--------|-------------|
 | `--agent claude,codex,pi` | Agents to follow (default: all) |
-| `--cwd <dir>` | Project directory whose sessions to follow |
-| `--theme auto\|light\|dark` | Default `auto`: follow the system (browser) light/dark setting live; `light`/`dark` fix it |
+| `--cwd <dir>` | Project directory whose sessions to follow (default: current directory) |
+| `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
+| `--theme auto\|light\|dark` | `auto` (default) follows the system light/dark setting as it changes |
 | `--font-size <px>` | Base font size |
-| `--history <n>` | Earlier responses each preview starts with (default 10, max 20; 0 = only the latest) |
 | `--no-open` | Print the URL instead of opening a browser |
 
-Requirements: Node 20+ and [pandoc](https://pandoc.org/installing.html) (`brew install pandoc`; set `PANDOC_PATH` if it isn't on `PATH`). Mermaid, MathJax fallbacks and PDF figures load from jsdelivr/unpkg in the browser, so those need a network connection.
+### Sessions and previews
 
-Install from a checkout:
+The index lists sessions whose logs changed in the last three days, up to eight per agent, most recently active first. Each entry shows the agent, a short session ID, the session title and when the session was last active. The title is the agent's own title for the session when it has one, and otherwise the first prompt. An entry marked **working** has a turn in progress. The index checks for new sessions every two seconds, including the new log an agent starts after `/clear`.
 
-```bash
-npm install && npm run build && npm link     # provides the agent-markdown-preview command
-```
+Selecting a session opens its preview in a separate tab; selecting it again returns to that tab. A preview updates when the agent finishes a turn and shows the final response of that turn, which is the text the agent writes after its last tool call. A small caption above each response names the agent, session and time, for example *Claude Code 3f2a · Fit decay model to measurements · 03:05 pm*. **All sessions (merged)** shows the most recent finished response from any session in the directory.
 
-## How responses are found
+Local images in responses are resolved against the project directory; absolute paths and web images also work.
 
-Each agent appends its session to a JSONL file. For the directory, the tool follows every recently active session log: modified in the last 3 days, up to 8 per agent. Older sessions are not listed; they may be resumable in their agent, but nothing is running. Each log is read continuously from where it left off, so concurrent sessions of the same or different agents are all observed. It rescans every 2 s for new sessions (including `/clear`).
+### History and navigation
 
-When the preview starts, it shows existing responses as history: each preview opens on the most recent one. After that, every newly finished response is shown in the order it is noticed. A log that appears later, such as a resumed old session, only contributes responses newer than the preview's start.
+Each preview starts with the last 10 finished responses from the session log, with the newest shown. The merged view takes the last 10 across all sessions, in time order. `--history` changes this count, and a page keeps up to 20 revisions as new responses arrive.
+
+Use **Previous**, **Next** and **Latest** in the **Preview** panel, or **Option/Alt+Left** and **Option/Alt+Right**; adding **Shift** jumps to the oldest or latest revision. While you are viewing the latest revision the page follows new responses. On an older revision it stays put and marks **Latest (new)** when something arrives.
+
+File previews start with the current version of the file and add a revision each time it changes. They keep your reading position across updates.
+
+### Restarts
+
+Each preview keeps the same local address when the command restarts, and previews that were open during the last day are started again. Open tabs therefore reconnect by themselves, and the history is rebuilt from the session logs. While the command is stopped, a tab says so beside its controls. After a restart, a new index tab opens only if no existing index tab reconnects within a few seconds.
+
+Addresses are remembered in `~/.agent-markdown-preview/servers.json`; set `AGENT_MARKDOWN_PREVIEW_HOME` to use another directory. If another program has taken a remembered port, the preview starts on a new port and you reopen it from the index.
+
+### Light and dark
+
+With `--theme auto`, pages follow the browser's light/dark setting, which normally follows the operating system, and switch as soon as it changes. Pages with Mermaid diagrams reload so the diagrams are redrawn in the new colours. `--theme light` or `--theme dark` fixes the theme. The colours are pi-markdown-preview's default light and dark palettes.
+
+### How responses are found
+
+Each agent writes its session to a JSONL file. agent-markdown-preview reads these files and leaves them unchanged; it needs no configuration in the agents themselves.
 
 | Agent | Session logs | Final response of a turn |
 |---|---|---|
-| Claude Code | `~/.claude/projects/<dir>/*.jsonl` (`CLAUDE_CONFIG_DIR` respected) | the assistant message ending with `stop_reason: end_turn`; its content blocks are joined |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (`CODEX_HOME` respected), matched by the header's `cwd` | `event_msg` → `task_complete.last_agent_message` |
-| Pi | `~/.pi/agent/sessions/--<dir>--/*.jsonl` | assistant message with `stopReason: "stop"` |
+| Claude Code | `~/.claude/projects/<directory>/*.jsonl` (respects `CLAUDE_CONFIG_DIR`) | the assistant message that ends the turn (`stop_reason: end_turn`), with its text blocks joined |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (respects `CODEX_HOME`), matched by the working directory recorded in each file | `task_complete` event, `last_agent_message` |
+| Pi | `~/.pi/agent/sessions/--<directory>--/*.jsonl` | assistant message with `stopReason: "stop"` |
 
-The tool only shows each turn's final response, not the interim text written between tool calls, which matches pi-markdown-preview's watch mode. Subagent (sidechain) messages are ignored.
+Subagent messages are skipped. These log formats are internal to each agent and can change between releases. Entries the tool does not recognise are ignored, so a format change shows up as missing previews rather than errors. OpenCode and Gemini CLI sessions are not supported yet.
 
-These log formats are internal to each CLI and can change without notice. Unknown entries are ignored, so a format change shows up as "no new response" rather than an error. The tests pin the current shapes.
+### Security
 
-## Keeping the renderer identical
+The index and every preview listen only on `127.0.0.1`. Each has its own random token, which the page exchanges for a browser cookie on first load. Anyone with a preview's link can read that preview, and the index link lists your sessions, so treat these links as private. The **Copy link** control produces a fresh link for another browser. The remembered-addresses file contains the tokens and is readable only by you.
 
-`src/render.ts` is **generated**. Never edit it by hand:
+A preview serves its rendered pages and the local images and PDFs they reference. The session logs themselves are never served.
 
-```bash
-npm run extract     # regenerate from ../pi-markdown-preview
-cp ../pi-markdown-preview/client/* src/client/ && cp ../pi-markdown-preview/shared/*.{js,lua} src/shared/
-npm test
-```
+## Relationship to pi-markdown-preview
 
-`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy exactly the top-level declarations the browser renderer depends on, verbatim and in their original order. It replaces Pi's `Theme` type with a structural `PreviewTheme`, which Pi's `Theme` still satisfies. It currently takes 94 of index.ts's 236 declarations.
-
-Every file in `src/shared` and `src/client` must stay identical to pi-markdown-preview (currently 0.17.3).
-
-`test/equivalence.test.mjs` renders pi-markdown-preview's own test fixtures, plus a code file, in both themes. It checks that the HTML is **byte-identical** to what the original produces, using a temporary copy of `../pi-markdown-preview` (or `AMP_REFERENCE`). The test is skipped if the reference or pandoc is missing.
-
-The long-term plan is the reverse direction: pi-markdown-preview (and Pi Studio's preview) import this package's renderer, and the extraction script goes away.
-
-## Scope and limitations
-
-- Browser only. Terminal image previews, PDF export and Pi theme colours stay in pi-markdown-preview.
-- OpenCode stores sessions in SQLite and Gemini/agy logs have not been examined. Neither is supported yet.
+agent-markdown-preview uses pi-markdown-preview's browser renderer and watch page, extracted so they run without Pi. Inside Pi, use pi-markdown-preview itself: it also provides terminal image previews, PDF export and colours from your Pi theme.
 
 ## Development
 
 ```bash
-npm test          # builds, then runs all tests (equivalence, session readers, live watch, themes)
-PUPPETEER_EXECUTABLE_PATH=/path/to/chrome-headless-shell npm test   # also runs the real-browser theme test
+npm install
+npm test            # builds, then runs all tests
 npm run typecheck
 ```
 
-Source is TypeScript in `src/`, compiled to `dist/`. `src/client` and `src/shared` are copied verbatim because the renderer reads them as text or runs them as-is.
+The source is TypeScript in `src/`, compiled to `dist/`. Setting `PUPPETEER_EXECUTABLE_PATH` to a Chromium build, such as `chrome-headless-shell`, also runs a real-browser test of light/dark switching.
+
+### Keeping the renderer identical
+
+`src/render.ts` is generated from pi-markdown-preview and should not be edited by hand. With a pi-markdown-preview checkout beside this one:
+
+```bash
+npm run extract     # regenerate src/render.ts from ../pi-markdown-preview
+cp ../pi-markdown-preview/client/* src/client/ && cp ../pi-markdown-preview/shared/*.{js,lua} src/shared/
+npm test
+```
+
+`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.17.3. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
+
+## License
+
+MIT
