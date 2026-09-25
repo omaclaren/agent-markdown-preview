@@ -69,7 +69,7 @@ npm test
 
 `scripts/extract-render-core.cjs` uses the TypeScript compiler to copy exactly the top-level declarations the browser renderer depends on, verbatim and in their original order. It replaces Pi's `Theme` type with a structural `PreviewTheme`, which Pi's `Theme` still satisfies. It currently takes 94 of index.ts's 236 declarations.
 
-`src/shared/browser-watch-server.js` and `src/client/watch-controls.css` currently come from pi-markdown-preview's `watch-page-improvements` branch (shortcut, status line, optional fixed port/token), pending a pi-markdown-preview release. Every file in `src/shared` and `src/client` must stay identical to pi-markdown-preview.
+Every file in `src/shared` and `src/client` must stay identical to pi-markdown-preview (currently 0.17.3).
 
 `test/equivalence.test.mjs` renders pi-markdown-preview's own test fixtures, plus a code file, in both themes. It checks that the HTML is **byte-identical** to what the original produces, using a temporary copy of `../pi-markdown-preview` (or `AMP_REFERENCE`). The test is skipped if the reference or pandoc is missing.
 
