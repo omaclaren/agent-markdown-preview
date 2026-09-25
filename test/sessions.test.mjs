@@ -140,3 +140,27 @@ test("the monitor stops following sessions that leave its window and does not re
 	assert.equal(monitor.sessions().length, 1);
 	assert.deepEqual(fresh.filter(key => key.startsWith("claude:a")), ["claude:a2"], "A's earlier answer is not replayed");
 });
+
+test("history reaches back past large tool output at the end of a long log", async () => {
+	const { createSessionMonitor } = await import("../dist/monitor.js");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "amp-deep-")));
+	const cwd = "/work/project";
+	const dir = join(root, claudeProjectDirName(cwd));
+	mkdirSync(dir, { recursive: true });
+	const answer = (id, text, offset) => JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() + offset).toISOString(), message: { id, stop_reason: "end_turn", content: [{ type: "text", text }] } }) + "\n";
+	const toolOutput = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t", content: "x".repeat(50_000) }] } }) + "\n";
+	let log = "";
+	for (let n = 1; n <= 15; n++) log += answer(`a${n}`, `Answer ${n}`, -100_000 + n * 1_000);
+	for (let n = 0; n < 4; n++) log += toolOutput; // 200 kB of tool output
+	log += answer("a16", "Answer 16", -1_000) + answer("a17", "Answer 17", 0);
+	writeFileSync(join(dir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), log);
+	// A small tail window stands in for 2 MB against multi-megabyte logs.
+	const monitor = createSessionMonitor({ cwd, roots: { claude: root }, agents: ["claude"], maxBackfillBytes: 150_000, rescanMs: 60_000 });
+	await monitor.ready;
+	const [session] = monitor.sessions();
+	monitor.close();
+	assert.equal(session.history.length, 17, "all 17 responses, not just the 2 in the tail window");
+	assert.deepEqual(session.history.slice(0, 2).map(r => r.markdown), ["Answer 1", "Answer 2"]);
+	assert.equal(session.history.at(-1).markdown, "Answer 17");
+	assert.equal(session.latest.markdown, "Answer 17");
+});

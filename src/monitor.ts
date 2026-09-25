@@ -60,6 +60,37 @@ const sessionId = (path: string) => createHash("sha256").update(path).digest("he
 /** Enough for any preview's history fill; the watch page keeps at most 20. */
 const SESSION_HISTORY = 20;
 
+/**
+ * Finished responses from the end of a log, reading further back (up to
+ * `maxBytes`) until `count` are found or the file starts. Long sessions with
+ * large tool output can hold only a few responses in their last megabytes.
+ */
+async function recentResponses(agent: AgentKind, path: string, count: number, maxBytes = 64 * 1024 * 1024): Promise<AgentResponse[]> {
+	const info = await stat(path);
+	for (let window = 4 * 1024 * 1024; ; window *= 4) {
+		const start = Math.max(0, info.size - Math.min(window, maxBytes));
+		const handle = await open(path, "r");
+		let text: string;
+		try {
+			const buffer = Buffer.alloc(info.size - start);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+			text = buffer.subarray(0, bytesRead).toString("utf8");
+		} finally { await handle.close(); }
+		const lines = text.split("\n");
+		if (start > 0) lines.shift(); // Partial first line.
+		const read = createSessionReader(agent, path);
+		const byKey = new Map<string, AgentResponse>();
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			let entry: unknown;
+			try { entry = JSON.parse(line); } catch { continue; }
+			for (const event of read(entry)) if (event.kind === "response") { byKey.delete(event.response.key); byKey.set(event.response.key, event.response); }
+		}
+		const responses = [...byKey.values()];
+		if (responses.length >= count || start === 0 || window >= maxBytes) return responses.slice(-count);
+	}
+}
+
 /** Title from the first prompt at the start of a log (reads at most `limitBytes`). */
 async function firstPromptTitle(agent: AgentKind, path: string, limitBytes = 1_000_000): Promise<string | null> {
 	const handle = await open(path, "r");
@@ -137,6 +168,18 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		}, { intervalMs: options.tailIntervalMs, maxBackfillBytes: options.maxBackfillBytes ?? 2_000_000, onError: error => log(`Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`) });
 		await entry.tail.ready;
 		backfilling = false;
+		// The tail starts near the end of the log; fill the history from further
+		// back when that part held too few responses.
+		if (state.history.length < SESSION_HISTORY) {
+			const earlier = await recentResponses(agent, path, SESSION_HISTORY).catch(() => []);
+			const known = new Set(state.history.map(r => r.key));
+			const older = earlier.filter(r => !known.has(r.key) && (state.history.length === 0 || r.time <= state.history[0]!.time));
+			if (older.length) {
+				state.history = [...older, ...state.history].slice(-SESSION_HISTORY);
+				state.responseCount = Math.max(state.responseCount, state.history.length);
+				if (!state.latest) state.latest = state.history.at(-1) ?? null;
+			}
+		}
 		// The tail starts near the end of long logs, so a prompt-based title would
 		// come from mid-session. The agent's own title (from the tail) still wins.
 		if (!state.title || !namedTitleSeen(state)) {
