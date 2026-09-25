@@ -28,7 +28,7 @@ By default the command opens a small **session index** for the directory. It lis
 | `--session <path>` | Preview one session log directly (agent detected from its path or first line) |
 | `--agent claude,codex,pi` | Agents to follow (default: all) |
 | `--cwd <dir>` | Project directory whose sessions to follow |
-| `--theme auto\|light\|dark` | Default `auto`: the macOS appearance, dark elsewhere |
+| `--theme auto\|light\|dark` | Default `auto`: follow the system (browser) light/dark setting live; `light`/`dark` fix it |
 | `--font-size <px>` | Base font size |
 | `--history <n>` | Earlier responses each preview starts with (default 10, max 20; 0 = only the latest) |
 | `--no-open` | Print the URL instead of opening a browser |
@@ -83,7 +83,8 @@ The long-term plan is the reverse direction: pi-markdown-preview (and Pi Studio'
 ## Development
 
 ```bash
-npm test          # builds, then runs all tests (equivalence, session readers, live watch)
+npm test          # builds, then runs all tests (equivalence, session readers, live watch, themes)
+PUPPETEER_EXECUTABLE_PATH=/path/to/chrome-headless-shell npm test   # also runs the real-browser theme test
 npm run typecheck
 ```
 

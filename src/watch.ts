@@ -8,9 +8,10 @@ import { createServer } from "node:http";
 import { basename, dirname, resolve } from "node:path";
 import { createSessionMonitor, type SessionMonitor, type SessionState } from "./monitor.js";
 import {
-	buildBrowserHtmlFromPandocFragment, DARK_PREVIEW_PALETTE, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX, LIGHT_PREVIEW_PALETTE,
-	normalizePreviewFontSizePx, prepareFilePreview, renderPreviewHtmlDocument, type PreviewStyle, type ThemeMode,
+	buildBrowserHtmlFromPandocFragment, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX,
+	normalizePreviewFontSizePx, prepareFilePreview, renderPreviewHtmlDocument, type PreviewStyle,
 } from "./render.js";
+import { styleForMode, themeFinisher } from "./theme.js";
 import { AGENT_LABELS, AGENTS, detectAgent, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
@@ -19,11 +20,7 @@ const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run age
 /** Remembered addresses make restarted previews reconnect; `null` disables. */
 const slotStore = (stateDir: string | null | undefined): SlotStore | null => stateDir === null ? null : createSlotStore(stateDir ?? defaultStateDir());
 
-/** Same result as pi-markdown-preview's getPreviewStyle() without a Pi theme. */
-export function styleForMode(mode: ThemeMode): PreviewStyle {
-	const palette = mode === "dark" ? DARK_PREVIEW_PALETTE : LIGHT_PREVIEW_PALETTE;
-	return { themeMode: mode, palette, cacheKey: [mode, ...Object.values(palette)].join("|") };
-}
+export { styleForMode };
 
 export interface RunningWatch {
 	url: string;
@@ -72,6 +69,8 @@ interface ViewOptions {
 	onRendered?: (response: AgentResponse, revision: number) => void;
 	slots: SlotStore | null;
 	slotKey: string;
+	/** Final touch to every page (light/dark following). */
+	finish: (html: string) => string;
 }
 
 /** One watch page following a stream of responses. Same key = revise in place. */
@@ -81,7 +80,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		// The render pipeline does not pass raw HTML through, so the caption is Markdown.
 		return caption ? `*${caption.replace(/[\\`*_[\]<>#|~$]/g, "\\$&")}*\n\n${response.markdown}` : response.markdown;
 	};
-	const render = async (response: AgentResponse) => (await renderPreviewHtmlDocument(markdownFor(response), options.style, options.cwd, false, options.fontSizePx)).html;
+	const render = async (response: AgentResponse) => options.finish((await renderPreviewHtmlDocument(markdownFor(response), options.style, options.cwd, false, options.fontSizePx)).html);
 	// Fill the page history from the logs (up to 4 pandoc runs at once), in order.
 	const rendered: ({ response: AgentResponse; html: string } | null)[] = new Array(options.history.length).fill(null);
 	let next = 0;
@@ -95,7 +94,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	}));
 	const seeded = rendered.filter((entry): entry is { response: AgentResponse; html: string } => entry !== null);
 	const initialHtml = seeded[0]?.html
-		?? buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx);
+		?? options.finish(buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx));
 	const { started: server, reused } = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
 		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
 	}));
@@ -149,7 +148,15 @@ interface CommonOptions {
 	stateDir?: string | null;
 	/** Earlier responses each preview starts with, from the logs (default 10; 0: only the latest). */
 	historyFill?: number;
+	/** Follow the system light/dark setting live (pages render light, with a dark override). */
+	followSystemTheme?: boolean;
 }
+
+/** Style and page finisher for a set of options. */
+const themeFor = (options: { style: PreviewStyle; followSystemTheme?: boolean; log?: (message: string) => void }, fontSizePx: number) => ({
+	style: options.followSystemTheme ? styleForMode("light") : options.style,
+	finish: themeFinisher(options.followSystemTheme === true, fontSizePx, options.log ?? (() => {})),
+});
 
 const fillCount = (options: CommonOptions) => Math.max(1, Math.min(20, Math.floor(options.historyFill ?? 10)));
 
@@ -183,8 +190,8 @@ function captionFor(monitor: SessionMonitor) {
 /** Creates the merged view over all monitored sessions (or one pinned session). */
 async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string) {
 	return createResponseView({
-		slots: slotStore(options.stateDir), slotKey,
-		cwd: base.cwd, style: options.style, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions(), fillCount(options)),
+		slots: slotStore(options.stateDir), slotKey, ...themeFor(options, base.fontSizePx),
+		cwd: base.cwd, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions(), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captionFor(monitor),
 		log: options.log ?? (() => {}), onRendered: options.onRendered,
@@ -226,7 +233,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		const session = id === "all" ? null : monitor.get(id);
 		if (id !== "all" && !session) return null;
 		const created = session
-			? createResponseView({ cwd, style: options.style, fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: `${viewPrefix}session|${session.path}` })
@@ -317,6 +324,8 @@ export interface FileWatchOptions {
 	onRendered?: (revision: number) => void;
 	/** Where preview addresses are remembered (default ~/.agent-markdown-preview; null: don't). */
 	stateDir?: string | null;
+	/** Follow the system light/dark setting live. */
+	followSystemTheme?: boolean;
 }
 
 /** Re-renders a Markdown/LaTeX/code/diff file whenever it changes. */
@@ -329,8 +338,9 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 		const content = await readFile(path, "utf8");
 		return { ...prepareFilePreview(path, content), contentHash: createHash("sha256").update(content).digest("hex") };
 	};
+	const { style, finish } = themeFor(options, fontSizePx);
 	const first = await snapshot();
-	const initial = await renderPreviewHtmlDocument(first.markdown, options.style, resourcePath, first.isLatex, fontSizePx);
+	const initial = { html: finish((await renderPreviewHtmlDocument(first.markdown, style, resourcePath, first.isLatex, fontSizePx)).html) };
 	const label = basename(path);
 	const { started: server, reused } = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
 		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, port, token, ...PAGE_TEXT,
@@ -347,9 +357,9 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 				try {
 					const next = await snapshot();
 					if (next.contentHash === lastHash) { lastError = undefined; continue; }
-					const rendered = await renderPreviewHtmlDocument(next.markdown, options.style, resourcePath, next.isLatex, fontSizePx);
+					const html = finish((await renderPreviewHtmlDocument(next.markdown, style, resourcePath, next.isLatex, fontSizePx)).html);
 					if (closed) return;
-					const revision = server.updateDocument(rendered.html, { appendToHistory: true });
+					const revision = server.updateDocument(html, { appendToHistory: true });
 					lastHash = next.contentHash;
 					lastError = undefined;
 					options.onRendered?.(revision);

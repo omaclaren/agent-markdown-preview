@@ -16,7 +16,7 @@ Options:
   --merged                        Open the merged preview directly instead of the session index.
   --session <path>                Preview one session log directly.
   --cwd <dir>                     Project directory whose sessions to follow (default: current).
-  --theme <auto|light|dark>       Page theme (default: auto, from the macOS appearance).
+  --theme <auto|light|dark>       Page theme (default: auto, following the system light/dark setting live).
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --no-open                       Print the URL without opening a browser.
@@ -77,12 +77,6 @@ function parseArgs(argv: string[]) {
 	return options;
 }
 
-function systemThemeMode(): "light" | "dark" {
-	if (process.platform !== "darwin") return "dark";
-	const result = spawnSync("defaults", ["read", "-g", "AppleInterfaceStyle"], { encoding: "utf8" });
-	return result.status === 0 && /dark/i.test(result.stdout) ? "dark" : "light";
-}
-
 function openInBrowser(url: string) {
 	const [command, args] = process.platform === "darwin" ? ["open", [url]]
 		: process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
@@ -96,15 +90,16 @@ async function main() {
 	if (spawnSync(pandoc, ["--version"], { stdio: "ignore" }).error) {
 		fail(`pandoc was not found (${pandoc}). Install it (e.g. brew install pandoc) or set PANDOC_PATH.`);
 	}
-	const style = styleForMode(options.theme === "auto" ? systemThemeMode() : options.theme as "light" | "dark");
+	const followSystemTheme = options.theme === "auto";
+	const style = styleForMode(followSystemTheme ? "light" : options.theme as "light" | "dark");
 	const log = (message: string) => process.stderr.write(message + "\n");
 	let watch: RunningWatch;
 	try {
 		watch = options.file
-			? await startFileWatch({ filePath: options.file, style, fontSizePx: options.fontSize, log })
+			? await startFileWatch({ filePath: options.file, style, followSystemTheme, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
-				: await startSessionIndex({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
+				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, style, followSystemTheme, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}
