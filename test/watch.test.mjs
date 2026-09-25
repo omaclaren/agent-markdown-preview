@@ -225,3 +225,57 @@ test("file watch comes back at the same address after a restart", { skip, timeou
 	assert.match(await page(url), /Notes/);
 	assert.match(await page(url), /Agent Markdown Preview<\/title>/);
 });
+
+const revisionsOf = async url => JSON.parse((await page(url)).match(/let revisions = (\[[^\]]*\])/)[1]);
+const atRevision = async (url, revision) => {
+	// The first request carries the token and sets the cookie; later ones may use ?revision=.
+	const first = await fetch(url);
+	const cookie = first.headers.get("set-cookie").split(";")[0];
+	return (await fetch(new URL(`/?revision=${revision}`, url), { headers: { cookie } })).text();
+};
+
+test("previews start with recent history from the logs, oldest first, newest shown", { skip, timeout: 60_000 }, async t => {
+	const f = fixture();
+	const a = join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl");
+	const b = join(f.claudeDir, "00000000-0000-4000-8000-00000000bbbb.jsonl");
+	let content = "";
+	for (let n = 1; n <= 12; n++) content += claudeAnswer(`a${n}`, `Answer A${n}`, iso(-600_000 + n * 20_000));
+	writeFileSync(a, content);
+	writeFileSync(b, claudeAnswer("b1", "Answer B1", iso(-600_000 + 5.5 * 20_000)) + claudeAnswer("b2", "Answer B2", iso(-600_000 + 11.5 * 20_000)));
+	const index = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
+	t.after(() => index.close());
+	const token = new URL(index.url).searchParams.get("token");
+	const sessions = (await (await fetch(new URL(`/api/sessions?token=${token}`, index.url))).json()).sessions;
+	const open = async id => (await fetch(new URL(`/open/${id}?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
+
+	const aUrl = await open(sessions.find(s => s.shortId === "aaaa").id);
+	const aRevisions = await revisionsOf(aUrl);
+	assert.equal(aRevisions.length, 10, "last 10 of 12 responses");
+	assert.match(await page(aUrl), /Answer A12/, "newest is shown");
+	assert.match(await atRevision(aUrl, aRevisions[0]), /Answer A3/, "oldest retained is A3");
+	assert.doesNotMatch(await atRevision(aUrl, aRevisions[0]), /Answer B/, "a session preview holds only its own responses");
+
+	// Merged: the most recent 10 across sessions, in time order, captioned.
+	const allUrl = await open("all");
+	const all = await revisionsOf(allUrl);
+	assert.equal(all.length, 10);
+	const texts = [];
+	for (const revision of all) texts.push((await atRevision(allUrl, revision)).match(/Answer [AB]\d+/)[0]);
+	assert.deepEqual(texts, ["Answer A5", "Answer B1", "Answer A6", "Answer A7", "Answer A8", "Answer A9", "Answer A10", "Answer A11", "Answer B2", "Answer A12"]);
+	assert.match(await atRevision(allUrl, all[1]), /<em>Claude Code bbbb · /);
+
+	// Live answers still append after the fill.
+	appendFileSync(a, claudeAnswer("a13", "Answer A13", iso(1_000)));
+	await waitFor(async () => /Answer A13/.test(await page(aUrl)), "live update after fill");
+	assert.equal((await revisionsOf(aUrl)).length, 11);
+});
+
+test("history fill can be turned off", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	const a = join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl");
+	writeFileSync(a, claudeAnswer("a1", "One", iso(-60_000)) + claudeAnswer("a2", "Two", iso(-30_000)));
+	const watch = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast, historyFill: 0 });
+	t.after(() => watch.close());
+	assert.equal((await revisionsOf(watch.url)).length, 1);
+	assert.match(await page(watch.url), /Two/);
+});

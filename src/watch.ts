@@ -48,7 +48,8 @@ interface ViewOptions {
 	style: PreviewStyle;
 	fontSizePx: number;
 	label: string;
-	initial: AgentResponse | null;
+	/** Responses to start with, oldest first; the last one is shown. */
+	history: AgentResponse[];
 	waitingText: string;
 	/** Prefix each response with its source (merged views). */
 	caption?: (response: AgentResponse) => string | null;
@@ -66,12 +67,26 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		return caption ? `*${caption.replace(/[\\`*_[\]<>#|~$]/g, "\\$&")}*\n\n${response.markdown}` : response.markdown;
 	};
 	const render = async (response: AgentResponse) => (await renderPreviewHtmlDocument(markdownFor(response), options.style, options.cwd, false, options.fontSizePx)).html;
-	const initialHtml = options.initial ? await render(options.initial)
-		: buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx);
-	const server = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
-		initialDocumentIsHistory: Boolean(options.initial), sourceLabel: options.label, port, token, ...PAGE_TEXT,
+	// Fill the page history from the logs (up to 4 pandoc runs at once), in order.
+	const rendered: ({ response: AgentResponse; html: string } | null)[] = new Array(options.history.length).fill(null);
+	let next = 0;
+	await Promise.all(Array.from({ length: Math.min(4, options.history.length) }, async () => {
+		while (next < options.history.length) {
+			const index = next++;
+			const response = options.history[index]!;
+			try { rendered[index] = { response, html: await render(response) }; }
+			catch (error) { options.log(`Could not render an earlier ${AGENT_LABELS[response.agent]} response: ${errorMessage(error)}`); }
+		}
 	}));
-	let shownKey = options.initial?.key ?? null, shownMarkdown = options.initial?.markdown ?? "", closed = false;
+	const seeded = rendered.filter((entry): entry is { response: AgentResponse; html: string } => entry !== null);
+	const initialHtml = seeded[0]?.html
+		?? buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx);
+	const server = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
+		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
+	}));
+	for (const { html } of seeded.slice(1)) server.updateDocument(html, { appendToHistory: true });
+	const shown = seeded.at(-1)?.response;
+	let shownKey = shown?.key ?? null, shownMarkdown = shown?.markdown ?? "", closed = false;
 	let queue = Promise.resolve();
 	return {
 		url: server.url,
@@ -115,7 +130,11 @@ interface CommonOptions {
 	onRendered?: (response: AgentResponse, revision: number) => void;
 	/** Where preview addresses are remembered (default ~/.agent-markdown-preview; null: don't). */
 	stateDir?: string | null;
+	/** Earlier responses each preview starts with, from the logs (default 10; 0: only the latest). */
+	historyFill?: number;
 }
+
+const fillCount = (options: CommonOptions) => Math.max(1, Math.min(20, Math.floor(options.historyFill ?? 10)));
 
 async function openMonitor(options: CommonOptions & { sessionPath?: string; sessionAgent?: AgentKind }) {
 	const cwd = await realpath(resolve(options.cwd));
@@ -132,13 +151,14 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 	return { cwd, monitor, fontSizePx: normalizePreviewFontSizePx(options.fontSizePx, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX), agents: sessionPaths ? sessionPaths.map(s => s.agent) : [...(options.agents ?? AGENTS)] };
 }
 
-const latestOf = (sessions: SessionState[]) => sessions.map(s => s.latest).filter((r): r is AgentResponse => r !== null).reduce<AgentResponse | null>((best, r) => !best || r.time >= best.time ? r : best, null);
+/** The most recent `count` responses across sessions, oldest first. */
+const recentAcross = (sessions: SessionState[], count: number) => sessions.flatMap(s => s.history).sort((a, b) => a.time - b.time).slice(-count);
 
 /** Creates the merged view over all monitored sessions (or one pinned session). */
 async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string, captions = true) {
 	return createResponseView({
 		slots: slotStore(options.stateDir), slotKey,
-		cwd: base.cwd, style: options.style, fontSizePx: base.fontSizePx, label, initial: latestOf(monitor.sessions()),
+		cwd: base.cwd, style: options.style, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions(), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captions ? response => {
 			const session = monitor.sessions().find(s => s.path === response.sessionPath);
@@ -183,7 +203,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		const session = id === "all" ? null : monitor.get(id);
 		if (id !== "all" && !session) return null;
 		const created = session
-			? createResponseView({ cwd, style: options.style, fontSizePx: base.fontSizePx, label: sessionLabel(session), initial: session.latest,
+			? createResponseView({ cwd, style: options.style, fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				slots, slotKey: `${viewPrefix}session|${session.path}` })
 			: mergedView(monitor, base, options, `All sessions · ${label}`, `${viewPrefix}all`);

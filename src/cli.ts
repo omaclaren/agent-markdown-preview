@@ -18,6 +18,7 @@ Options:
   --cwd <dir>                     Project directory whose sessions to follow (default: current).
   --theme <auto|light|dark>       Page theme (default: auto, from the macOS appearance).
   --font-size <px>                Base font size.
+  --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --no-open                       Print the URL without opening a browser.
   -h, --help                      Show this help.
   -v, --version                   Show the version.
@@ -31,7 +32,7 @@ function fail(message: string): never {
 }
 
 function parseArgs(argv: string[]) {
-	const options = { agents: [] as AgentKind[], merged: false, session: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: true, file: undefined as string | undefined };
+	const options = { agents: [] as AgentKind[], merged: false, history: undefined as number | undefined, session: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: true, file: undefined as string | undefined };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		const value = () => {
@@ -62,6 +63,10 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--font-size") {
 			options.fontSize = Number(value());
 			if (!Number.isFinite(options.fontSize)) fail("--font-size needs a number.");
+		}
+		else if (arg === "--history") {
+			options.history = Number(value());
+			if (!Number.isInteger(options.history) || options.history < 0 || options.history > 20) fail("--history needs a whole number from 0 to 20.");
 		}
 		else if (arg === "--no-open") options.open = false;
 		else if (arg.startsWith("-")) fail(`Unknown option ${arg}. See --help.`);
@@ -98,8 +103,8 @@ async function main() {
 		watch = options.file
 			? await startFileWatch({ filePath: options.file, style, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, log })
-				: await startSessionIndex({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, log });
+				? await startResponseWatch({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, style, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}

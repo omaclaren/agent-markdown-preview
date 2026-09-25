@@ -17,6 +17,7 @@ By default the command opens a small **session index** for the directory. It lis
 - Clicking a session opens its own live preview in a separate tab. Clicking it again returns to that tab.
 - **All sessions (merged)** shows the latest finished response from any session. Each response is labelled with its source, e.g. `Claude Code 3f2a · 14:02`.
 - Every preview updates when a turn finishes. The page's history controls step back through earlier responses or file versions.
+- Each preview starts with **recent history** from the logs: the last 10 finished responses (for the merged view, across all sessions, by time), with the newest shown. So the history is there as soon as a tab opens, and again after a restart. `--history <n>` changes the count (0–20; 0 = only the latest). File previews start with the current version only.
 - Keyboard: **Option+←/→** steps through history; add **Shift** to jump to the oldest or latest revision.
 - **Restarts don't strand tabs.** Each preview keeps its address (port and token) across restarts, and previews that were open are brought back when the index restarts. Open tabs reconnect by themselves. While the preview isn't running, a tab says so beside its controls. Addresses are remembered in `~/.agent-markdown-preview/servers.json` (private to you; `AGENT_MARKDOWN_PREVIEW_HOME` overrides the location). If a remembered port has been taken, the preview picks a new one and you reopen it from the index.
 
@@ -28,6 +29,7 @@ By default the command opens a small **session index** for the directory. It lis
 | `--cwd <dir>` | Project directory whose sessions to follow |
 | `--theme auto\|light\|dark` | Default `auto`: the macOS appearance, dark elsewhere |
 | `--font-size <px>` | Base font size |
+| `--history <n>` | Earlier responses each preview starts with (default 10, max 20; 0 = only the latest) |
 | `--no-open` | Print the URL instead of opening a browser |
 
 Requirements: Node 20+ and [pandoc](https://pandoc.org/installing.html) (`brew install pandoc`; set `PANDOC_PATH` if it isn't on `PATH`). Mermaid, MathJax fallbacks and PDF figures load from jsdelivr/unpkg in the browser, so those need a network connection.

@@ -17,6 +17,8 @@ export interface SessionState {
 	lastActivity: number;
 	/** Most recent completed response, including history from before the watch started. */
 	latest: AgentResponse | null;
+	/** Recent completed responses, oldest first, one entry (latest revision) per response. */
+	history: AgentResponse[];
 	responseCount: number;
 }
 
@@ -55,6 +57,8 @@ export interface SessionMonitor {
 }
 
 const sessionId = (path: string) => createHash("sha256").update(path).digest("hex").slice(0, 16);
+/** Enough for any preview's history fill; the watch page keeps at most 20. */
+const SESSION_HISTORY = 20;
 
 /** Title from the first prompt at the start of a log (reads at most `limitBytes`). */
 async function firstPromptTitle(agent: AgentKind, path: string, limitBytes = 1_000_000): Promise<string | null> {
@@ -97,7 +101,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	async function track(agent: AgentKind, path: string, mtimeMs: number) {
 		const id = sessionId(path);
 		if (tracked.has(id) || closed) return;
-		const state: SessionState = { id, agent, path, shortId: sessionShortId(path), title: null, working: false, lastActivity: mtimeMs, latest: null, responseCount: 0 };
+		const state: SessionState = { id, agent, path, shortId: sessionShortId(path), title: null, working: false, lastActivity: mtimeMs, latest: null, history: [], responseCount: 0 };
 		const initial = !initialScanDone;
 		const read = createSessionReader(agent, path);
 		const entry = { state, tail: null as unknown as JsonlTail, initial };
@@ -111,6 +115,12 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 					const response = event.response;
 					const revision = state.latest?.key === response.key;
 					state.latest = response;
+					const known = state.history.findIndex(r => r.key === response.key);
+					if (known >= 0) state.history[known] = response;
+					else {
+						state.history.push(response);
+						if (state.history.length > SESSION_HISTORY) state.history.shift();
+					}
 					if (!revision) state.responseCount++;
 					state.lastActivity = Math.max(state.lastActivity, response.time);
 					// History: anything read while catching up with a log that existed at
