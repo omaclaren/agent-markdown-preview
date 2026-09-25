@@ -37,9 +37,10 @@ test("local document rewriting preserves fragments and ignores non-links, networ
 	assert.deepEqual(seen, ["/other/report & notes.md", "/work/docs/résumé.md", "/outside/notes.tex", "/work/project/src/example.py", "/work/project/notes#one.md"]);
 	assert.match(html, /href="\/doc\/1\?identity=test#details"/);
 	assert.match(html, /href="\/doc\/2\?identity=test#intro"/);
-	assert.equal((html.match(/target="_blank" rel="noopener noreferrer"/g) || []).length, 5);
+	assert.equal((html.match(/rel="noopener noreferrer"/g) || []).length, 5);
+	assert.doesNotMatch(html, /target="_blank"/);
 	assert.doesNotMatch(html, /target="_self"|rel="author"| download/);
-	for (const href of ["#section", "?revision=2", "https://example.com/report.md", "//example.com/report.md", "file://remote/report.md", "data:text/plain,report.md", "javascript:alert('report.md')", "report.pdf", "archive.zip", "../.env", "bad%00.md", "bad%XX.md"]) {
+	for (const href of ["#section", "?revision=2", "https://example.com/report.md", "//example.com/report.md", "file://remote/report.md", "data:text/plain,report.md", "javascript:alert('report.md')", "archive.zip", "../.env", "bad%00.md", "bad%XX.md"]) {
 		const input = `<a href="${href}">keep</a>`;
 		assert.equal(rewriteBrowserWatchLocalDocumentLinks(input, "/work", () => { throw new Error("unexpected route"); }), input, href);
 	}
@@ -140,7 +141,7 @@ test("agent response links resolve against the monitored project", { skip, timeo
 });
 
 const browserPath = process.env.PUPPETEER_EXECUTABLE_PATH;
-test("clicking a report opens an isolated new tab with working anchors, images and nested links", {
+test("middle-clicking a report opens an isolated new tab with working anchors, images and nested links", {
 	skip: skip || (!browserPath && "set PUPPETEER_EXECUTABLE_PATH to a test browser"), timeout: 45_000,
 }, async t => {
 	const root = fixture();
@@ -156,18 +157,18 @@ test("clicking a report opens an isolated new tab with working anchors, images a
 	browser = await puppeteer.launch({ executablePath: browserPath, headless: true, userDataDir: join(root, "browser") });
 	const page = await browser.newPage();
 	await page.goto(watch.url, { waitUntil: "load" });
-	const popup = new Promise(resolve => page.once("popup", resolve));
-	await page.click('#preview-root a[target="_blank"]');
-	const report = await popup;
+	const popup = browser.waitForTarget(target => target.type() === "page" && target !== page.target() && target.url().includes(prefix), { timeout: 10000 });
+	await page.click('#preview-root a[href^="/__pi_markdown_preview_document__/"]', { button: "middle" });
+	const report = await (await popup).page();
 	await report.waitForSelector("#details");
 	assert.equal(new URL(report.url()).hash, "#details");
 	assert.equal(await report.evaluate(() => window.opener), null);
 	assert.equal(await report.title(), "report with spaces.md — Agent Markdown Preview");
 	await report.waitForFunction(() => document.querySelector("#preview-root img")?.naturalWidth === 16);
 	assert.equal(await page.$eval("#source", el => el.textContent), "Source", "the response stays in its original tab");
-	const nextPopup = new Promise(resolve => report.once("popup", resolve));
-	await report.click('#preview-root a[target="_blank"]');
-	const next = await nextPopup;
+	const nextPopup = browser.waitForTarget(target => target.type() === "page" && target !== page.target() && target !== report.target() && target.url().includes(prefix), { timeout: 10000 });
+	await report.click('#preview-root a[href^="/__pi_markdown_preview_document__/"]', { button: "middle" });
+	const next = await (await nextPopup).page();
 	await next.waitForSelector("#next-document");
 	assert.equal(await next.$eval("#next-document", el => el.textContent), "Next document");
 	assert.equal(await next.$('[data-watch-control="previous"]'), null, "snapshots don't acquire the source session's history controls");

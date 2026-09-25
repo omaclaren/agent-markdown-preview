@@ -15,6 +15,8 @@ import {
 import { styleForMode, themeFinisher } from "./theme.js";
 import { AGENT_LABELS, AGENTS, detectAgent, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
+import { isHtmlPagePath } from "./shared/html-page-preview.js";
+import { readLinkedDocument } from "./shared/read-linked-document.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
 
 const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run agent-markdown-preview again for a fresh link." };
@@ -355,16 +357,17 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 	const resourcePath = dirname(path);
 	const log = options.log ?? (() => {});
 	const fontSizePx = normalizePreviewFontSizePx(options.fontSizePx, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX);
+	const htmlPage = isHtmlPagePath(path);
 	const snapshot = async () => {
-		const content = await readFile(path, "utf8");
-		return { ...prepareFilePreview(path, content), contentHash: createHash("sha256").update(content).digest("hex") };
+		const content = htmlPage ? await readLinkedDocument(path, new AbortController().signal) : await readFile(path, "utf8");
+		return { ...prepareFilePreview(path, content), content, contentHash: createHash("sha256").update(content).digest("hex") };
 	};
 	const { style, finish } = themeFor(options, fontSizePx);
 	const first = await snapshot();
-	const initial = { html: finish((await renderPreviewHtmlDocument(first.markdown, style, resourcePath, first.isLatex, fontSizePx)).html) };
+	const initial = { html: htmlPage ? first.content : finish((await renderPreviewHtmlDocument(first.markdown, style, resourcePath, first.isLatex, fontSizePx)).html) };
 	const label = basename(path);
 	const { started: server, reused } = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
-		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, port, token, ...PAGE_TEXT,
+		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, htmlFile: htmlPage ? path : undefined, port, token, ...PAGE_TEXT,
 		renderLocalDocument: localDocumentRenderer(style, fontSizePx, finish),
 	}));
 
@@ -379,7 +382,7 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 				try {
 					const next = await snapshot();
 					if (next.contentHash === lastHash) { lastError = undefined; continue; }
-					const html = finish((await renderPreviewHtmlDocument(next.markdown, style, resourcePath, next.isLatex, fontSizePx)).html);
+					const html = htmlPage ? next.content : finish((await renderPreviewHtmlDocument(next.markdown, style, resourcePath, next.isLatex, fontSizePx)).html);
 					if (closed) return;
 					const revision = server.updateDocument(html, { appendToHistory: true });
 					lastHash = next.contentHash;
