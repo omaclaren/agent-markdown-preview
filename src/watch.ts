@@ -323,7 +323,13 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		async close() {
 			monitor.close();
 			await Promise.all([...views.values()].map(v => v.then(x => x.close(), () => {})));
-			await new Promise<void>(done => { server.close(() => done()); server.closeAllConnections?.(); });
+			await new Promise<void>(done => {
+				// Bun's close() discards the native server handle, so force-close
+				// first there. Keep Node's stop-accepting-before-force-close order.
+				if (process.versions.bun) server.closeAllConnections?.();
+				server.close(() => done());
+				server.closeAllConnections?.();
+			});
 		},
 	};
 }

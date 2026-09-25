@@ -339,8 +339,8 @@ test("a response finishing while a preview renders its history is not lost", { s
 	await waitFor(async () => /Finished during start-up/.test(await page(watch.url)), "response from the start-up window", 15_000);
 });
 
-test("deep backfill updates open merged previews in response order", { skip, timeout: 60_000 }, async t => {
-	for (const withTailResponse of [false, true]) await t.test(withTailResponse ? "with a newer response in the tail" : "all responses outside the tail", async t => {
+for (const withTailResponse of [false, true]) {
+	test(`deep backfill updates open merged previews in response order: ${withTailResponse ? "with a newer response in the tail" : "all responses outside the tail"}`, { skip, timeout: 60_000 }, async t => {
 		const f = fixture();
 		const directRendered = [], indexRendered = [];
 		const options = { cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast };
@@ -379,7 +379,7 @@ test("deep backfill updates open merged previews in response order", { skip, tim
 			assert.match(await page(url), /Subsequent live answer/);
 		}
 	});
-});
+}
 
 test("--session with a single --agent works when the log's agent cannot be detected", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
