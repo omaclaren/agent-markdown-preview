@@ -138,7 +138,7 @@ test("pinned session and waiting page", { skip, timeout: 30_000 }, async t => {
 	assert.match(pinned.label, /^Pi pinn/);
 	const html = await page(pinned.url);
 	assert.match(html, /Pinned session/);
-	assert.doesNotMatch(html, /<em>Pi \w+ · /, "a single pinned session needs no source captions");
+	assert.match(html, /<em>Pi pinn · \d/, "every preview says which session a response came from");
 });
 
 test("file watch re-renders on change", { skip, timeout: 30_000 }, async t => {
@@ -278,4 +278,46 @@ test("history fill can be turned off", { skip, timeout: 30_000 }, async t => {
 	t.after(() => watch.close());
 	assert.equal((await revisionsOf(watch.url)).length, 1);
 	assert.match(await page(watch.url), /Two/);
+});
+
+test("per-session previews caption responses with agent, session and title", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), line({ type: "ai-title", aiTitle: "Review the hosting core" }) + claudeAnswer("a1", "Body text", iso(-1_000)));
+	const index = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
+	t.after(() => index.close());
+	const token = new URL(index.url).searchParams.get("token");
+	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, index.url))).json()).sessions;
+	const url = (await fetch(new URL(`/open/${session.id}?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
+	assert.match(await page(url), /<em>Claude Code aaaa · Review the hosting core · [^<]+<\/em>/);
+});
+
+test("a restarted preview notices a reconnecting tab instead of needing a new one", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("a1", "Hi", iso(-1_000)));
+	const stateDir = join(f.base, "state");
+	const options = { cwd: f.cwd, roots: f.roots, style: styleForMode("light"), rescanMs: 100, tailIntervalMs: 40, stateDir };
+	const first = await startSessionIndex(options);
+	assert.equal(first.reused, false, "a first run gets a new address");
+	await first.close();
+	const second = await startSessionIndex(options);
+	t.after(() => second.close());
+	assert.equal(second.reused, true);
+	assert.equal(await second.waitForViewer(300), false, "no tab yet");
+	const token = new URL(second.url).searchParams.get("token");
+	setTimeout(() => void fetch(new URL(`/api/sessions?token=${token}`, second.url)), 100); // the old index tab polling
+	assert.equal(await second.waitForViewer(3_000), true);
+
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "amp-file-")));
+	const file = join(dir, "notes.md");
+	writeFileSync(file, "# Notes\n");
+	const watch = await startFileWatch({ filePath: file, style: styleForMode("light"), stateDir });
+	t.after(() => watch.close());
+	assert.equal(await watch.waitForViewer(200), false);
+	const pageResponse = await fetch(watch.url);
+	const cookie = pageResponse.headers.get("set-cookie").split(";")[0];
+	await pageResponse.text();
+	const events = new AbortController();
+	t.after(() => events.abort());
+	void fetch(new URL("/__pi_markdown_preview_events__?revision=1&latest=1", watch.url), { headers: { cookie }, signal: events.signal }).catch(() => {});
+	assert.equal(await watch.waitForViewer(3_000), true, "a connected page counts as a viewer");
 });

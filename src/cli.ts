@@ -109,7 +109,12 @@ async function main() {
 		fail(error instanceof Error ? error.message : String(error));
 	}
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
-	if (options.open) openInBrowser(watch.url);
+	// After a restart at the same address, an open tab reconnects by itself;
+	// only open another if none does within a few seconds.
+	if (options.open) {
+		if (watch.reused && await watch.waitForViewer(6_000)) process.stdout.write("An open tab reconnected, so no new one was opened.\n");
+		else openInBrowser(watch.url);
+	}
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);
 	process.on("SIGTERM", stop);

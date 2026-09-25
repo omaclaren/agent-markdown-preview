@@ -90,13 +90,13 @@ export function freePort(): Promise<number> {
  * fixed address when there is none or it is taken. Always a fixed port, so
  * the page knows to reconnect after a restart.
  */
-export async function startAtSlot<T>(store: SlotStore | null, key: string, start: (port: number, token: string) => Promise<T>): Promise<T> {
+export async function startAtSlot<T>(store: SlotStore | null, key: string, start: (port: number, token: string) => Promise<T>): Promise<{ started: T; reused: boolean }> {
 	const saved = store?.get(key);
 	if (saved) {
 		try {
 			const started = await start(saved.port, saved.token);
 			store?.set(key, saved);
-			return started;
+			return { started, reused: true };
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException)?.code !== "EADDRINUSE") throw error;
 		}
@@ -107,7 +107,7 @@ export async function startAtSlot<T>(store: SlotStore | null, key: string, start
 		try {
 			const started = await start(port, token);
 			store?.set(key, { port, token });
-			return started;
+			return { started, reused: false };
 		} catch (error) {
 			lastError = error;
 			if ((error as NodeJS.ErrnoException)?.code !== "EADDRINUSE") throw error;

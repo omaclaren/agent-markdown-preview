@@ -28,7 +28,20 @@ export function styleForMode(mode: ThemeMode): PreviewStyle {
 export interface RunningWatch {
 	url: string;
 	label: string;
+	/** True when this started at a remembered address, where an old tab may reconnect. */
+	reused: boolean;
+	/** Resolves true once a page is connected (e.g. a reconnecting tab), or false after `timeoutMs`. */
+	waitForViewer(timeoutMs: number): Promise<boolean>;
 	close(): Promise<void>;
+}
+
+async function pollFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (!check()) {
+		if (Date.now() >= deadline) return false;
+		await new Promise(done => setTimeout(done, 100));
+	}
+	return true;
 }
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -38,6 +51,8 @@ const timeOfDay = (time: number) => new Date(time).toLocaleTimeString([], { hour
 
 interface ResponseView {
 	url: string;
+	reused: boolean;
+	readonly clientCount: number;
 	readonly shownKey: string | null;
 	show(response: AgentResponse): void;
 	close(): Promise<void>;
@@ -81,7 +96,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	const seeded = rendered.filter((entry): entry is { response: AgentResponse; html: string } => entry !== null);
 	const initialHtml = seeded[0]?.html
 		?? buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx);
-	const server = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
+	const { started: server, reused } = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
 		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
 	}));
 	for (const { html } of seeded.slice(1)) server.updateDocument(html, { appendToHistory: true });
@@ -90,6 +105,8 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	let queue = Promise.resolve();
 	return {
 		url: server.url,
+		reused,
+		get clientCount() { return server.clientCount; },
 		get shownKey() { return shownKey; },
 		show(response) {
 			if (closed || (response.key === shownKey && response.markdown === shownMarkdown)) return;
@@ -154,16 +171,22 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 /** The most recent `count` responses across sessions, oldest first. */
 const recentAcross = (sessions: SessionState[], count: number) => sessions.flatMap(s => s.history).sort((a, b) => a.time - b.time).slice(-count);
 
+/** A small line above each response saying where it came from. */
+function captionFor(monitor: SessionMonitor) {
+	return (response: AgentResponse) => {
+		const session = monitor.sessions().find(s => s.path === response.sessionPath);
+		const title = session?.title ? (session.title.length > 60 ? session.title.slice(0, 59) + "…" : session.title) : null;
+		return [`${AGENT_LABELS[response.agent]}${session ? ` ${session.shortId}` : ""}`, title, timeOfDay(response.time)].filter(Boolean).join(" · ");
+	};
+}
+
 /** Creates the merged view over all monitored sessions (or one pinned session). */
-async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string, captions = true) {
+async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string) {
 	return createResponseView({
 		slots: slotStore(options.stateDir), slotKey,
 		cwd: base.cwd, style: options.style, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions(), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
-		caption: captions ? response => {
-			const session = monitor.sessions().find(s => s.path === response.sessionPath);
-			return `${AGENT_LABELS[response.agent]}${session ? ` ${session.shortId}` : ""} · ${timeOfDay(response.time)}`;
-		} : undefined,
+		caption: captionFor(monitor),
 		log: options.log ?? (() => {}), onRendered: options.onRendered,
 	});
 }
@@ -176,9 +199,9 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 	const base = await openMonitor(options);
 	const pinned = options.sessionPath ? base.monitor.sessions()[0] : null;
 	const label = pinned ? sessionLabel(pinned) : `All sessions · ${basename(base.cwd) || base.cwd}`;
-	const view = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, !pinned);
+	const view = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`);
 	base.monitor.onResponse((_session, response, fresh) => { if (fresh || response.key === view.shownKey) view.show(response); });
-	return { url: view.url, label, async close() { base.monitor.close(); await view.close(); } };
+	return { url: view.url, label, reused: view.reused, waitForViewer: ms => pollFor(() => view.clientCount > 0, ms), async close() { base.monitor.close(); await view.close(); } };
 }
 
 const INDEX_PAGE = readFileSync(new URL("./index-page.html", import.meta.url), "utf8");
@@ -192,7 +215,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 	const { cwd, monitor } = base;
 	const log = options.log ?? (() => {});
 	const slots = slotStore(options.stateDir);
-	let token = "";
+	let token = "", lastPollAt = 0;
 	const views = new Map<string, Promise<ResponseView>>();
 	const label = `${basename(cwd) || cwd}`;
 	const viewPrefix = `${cwd}|index-view|`;
@@ -205,6 +228,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		const created = session
 			? createResponseView({ cwd, style: options.style, fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
+				caption: captionFor(monitor),
 				slots, slotKey: `${viewPrefix}session|${session.path}` })
 			: mergedView(monitor, base, options, `All sessions · ${label}`, `${viewPrefix}all`);
 		views.set(id, created);
@@ -234,6 +258,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 				});
 			}
 			if (url.pathname === "/api/sessions") {
+				lastPollAt = Date.now();
 				const sessions = monitor.sessions().map(s => ({
 					id: s.id, agent: s.agent, agentLabel: AGENT_LABELS[s.agent], shortId: s.shortId, title: s.title, working: s.working,
 					lastActivity: s.lastActivity, responseCount: s.responseCount, file: basename(s.path),
@@ -253,7 +278,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 			if (!res.headersSent) send(500, "Could not open that view: " + errorMessage(error));
 		}
 	});
-	await startAtSlot(slots, `${cwd}|index`, (slotPort, slotToken) => new Promise<void>((done, fail) => {
+	const { reused } = await startAtSlot(slots, `${cwd}|index`, (slotPort, slotToken) => new Promise<void>((done, fail) => {
 		const onError = (error: Error) => { server.off("listening", onListening); fail(error); };
 		const onListening = () => { server.off("error", onError); token = slotToken; done(); };
 		server.once("error", onError);
@@ -268,9 +293,12 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		const id = rest === "all" ? "all" : rest.startsWith("session|") ? monitor.sessions().find(s => s.path === rest.slice("session|".length))?.id : undefined;
 		if (id) view(id)?.catch(error => log(`Could not restore a preview: ${errorMessage(error)}`));
 	}
+	const startedAt = Date.now();
 	return {
 		url: `http://127.0.0.1:${port}/?token=${token}`,
 		label: `sessions in ${label}`,
+		reused,
+		waitForViewer: ms => pollFor(() => lastPollAt >= startedAt, ms),
 		async close() {
 			monitor.close();
 			await Promise.all([...views.values()].map(v => v.then(x => x.close(), () => {})));
@@ -304,7 +332,7 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 	const first = await snapshot();
 	const initial = await renderPreviewHtmlDocument(first.markdown, options.style, resourcePath, first.isLatex, fontSizePx);
 	const label = basename(path);
-	const server = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
+	const { started: server, reused } = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
 		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, port, token, ...PAGE_TEXT,
 	}));
 
@@ -341,6 +369,8 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 	return {
 		url: server.url,
 		label,
+		reused,
+		waitForViewer: ms => pollFor(() => server.clientCount > 0, ms),
 		async close() {
 			if (closed) return;
 			closed = true;
