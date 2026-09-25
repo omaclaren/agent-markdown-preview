@@ -13,4 +13,5 @@ execFileSync(process.execPath, [join(root, "node_modules", "typescript", "bin", 
 cpSync(join(root, "src", "client"), join(dist, "client"), { recursive: true });
 cpSync(join(root, "src", "shared"), join(dist, "shared"), { recursive: true });
 cpSync(join(root, "src", "index-page.html"), join(dist, "index-page.html"));
+cpSync(join(root, "src", "themes"), join(dist, "themes"), { recursive: true });
 chmodSync(join(dist, "cli.js"), 0o755);

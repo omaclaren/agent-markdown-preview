@@ -21,7 +21,7 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 - **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
 - **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
 - **Rendering** — Pandoc-based Markdown and LaTeX with math, syntax highlighting, tables, Mermaid diagrams, local images and `[an: ...]` annotation markers, using the same renderer as [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview).
-- **Light and dark** — pages follow the system light/dark setting as it changes, or use a fixed theme.
+- **Themes** — pages follow the system light/dark setting as it changes, using the default palettes or the [pi-studio](https://github.com/omaclaren/pi-studio) light and dark themes. Fixed themes and Pi theme files also work.
 - **Restarts** — previews keep their local addresses, so open tabs reconnect when the command restarts.
 
 ## Requirements
@@ -60,7 +60,7 @@ Run the command in the project directory where you are working with an agent:
 | `--agent claude,codex,pi` | Agents to follow (default: all) |
 | `--cwd <dir>` | Project directory whose sessions to follow (default: current directory) |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
-| `--theme auto\|light\|dark` | `auto` (default) follows the system light/dark setting as it changes |
+| `--theme <name\|file>` | `auto` (default) or `pi-studio` follows the system light/dark setting; `light`, `dark`, `pi-studio-light`, `pi-studio-dark` or a Pi theme `.json` file fixes the theme |
 | `--font-size <px>` | Base font size |
 | `--no-open` | Print the URL instead of opening a browser |
 
@@ -86,9 +86,11 @@ Each preview keeps the same local address when the command restarts, and preview
 
 Addresses are remembered in `~/.agent-markdown-preview/servers.json`; set `AGENT_MARKDOWN_PREVIEW_HOME` to use another directory. If another program has taken a remembered port, the preview starts on a new port and you reopen it from the index.
 
-### Light and dark
+### Themes
 
-With `--theme auto`, pages follow the browser's light/dark setting, which normally follows the operating system, and switch as soon as it changes. Pages with Mermaid diagrams reload so the diagrams are redrawn in the new colours. `--theme light` or `--theme dark` fixes the theme. The colours are pi-markdown-preview's default light and dark palettes.
+With `--theme auto` (the default), pages follow the browser's light/dark setting, which normally follows the operating system, and switch as soon as it changes. They use pi-markdown-preview's default light and dark palettes. `--theme pi-studio` does the same with the light and dark themes from pi-studio. Pages with Mermaid diagrams reload so the diagrams are redrawn in the new colours.
+
+`--theme light`, `dark`, `pi-studio-light` or `pi-studio-dark` fixes the theme, as does the path of a Pi theme `.json` file. Pi themes are resolved as Pi resolves them, so the colours match pi-markdown-preview inside Pi with the same theme.
 
 ### How responses are found
 
@@ -132,7 +134,7 @@ cp ../pi-markdown-preview/client/* src/client/ && cp ../pi-markdown-preview/shar
 npm test
 ```
 
-`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.17.3. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
+`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.17.3. `src/themes` holds unchanged copies of pi-studio's theme files. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
 
 ## License
 

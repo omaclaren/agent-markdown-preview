@@ -148,14 +148,16 @@ interface CommonOptions {
 	stateDir?: string | null;
 	/** Earlier responses each preview starts with, from the logs (default 10; 0: only the latest). */
 	historyFill?: number;
-	/** Follow the system light/dark setting live (pages render light, with a dark override). */
+	/** Follow the system light/dark setting live: `style` is used for light, `darkStyle` for dark. */
 	followSystemTheme?: boolean;
+	/** Dark counterpart of `style` when following the system (default: the built-in dark palette). */
+	darkStyle?: PreviewStyle;
 }
 
 /** Style and page finisher for a set of options. */
-const themeFor = (options: { style: PreviewStyle; followSystemTheme?: boolean; log?: (message: string) => void }, fontSizePx: number) => ({
-	style: options.followSystemTheme ? styleForMode("light") : options.style,
-	finish: themeFinisher(options.followSystemTheme === true, fontSizePx, options.log ?? (() => {})),
+const themeFor = (options: { style: PreviewStyle; followSystemTheme?: boolean; darkStyle?: PreviewStyle; log?: (message: string) => void }, fontSizePx: number) => ({
+	style: options.style,
+	finish: themeFinisher(options.followSystemTheme === true, fontSizePx, options.log ?? (() => {}), options.style, options.darkStyle ?? styleForMode("dark")),
 });
 
 const fillCount = (options: CommonOptions) => Math.max(1, Math.min(20, Math.floor(options.historyFill ?? 10)));
@@ -334,8 +336,9 @@ export interface FileWatchOptions {
 	onRendered?: (revision: number) => void;
 	/** Where preview addresses are remembered (default ~/.agent-markdown-preview; null: don't). */
 	stateDir?: string | null;
-	/** Follow the system light/dark setting live. */
+	/** Follow the system light/dark setting live: `style` is used for light, `darkStyle` for dark. */
 	followSystemTheme?: boolean;
+	darkStyle?: PreviewStyle;
 }
 
 /** Re-renders a Markdown/LaTeX/code/diff file whenever it changes. */

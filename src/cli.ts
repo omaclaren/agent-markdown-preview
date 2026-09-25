@@ -2,6 +2,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { AGENTS, type AgentKind } from "./sessions.js";
+import { BUNDLED_THEMES, styleForPiTheme } from "./pi-theme.js";
+import type { PreviewStyle } from "./render.js";
 import { startFileWatch, startResponseWatch, startSessionIndex, styleForMode, type RunningWatch } from "./watch.js";
 
 const HELP = `agent-markdown-preview: browser preview of coding-agent responses and local files.
@@ -16,7 +18,9 @@ Options:
   --merged                        Open the merged preview directly instead of the session index.
   --session <path>                Preview one session log directly.
   --cwd <dir>                     Project directory whose sessions to follow (default: current).
-  --theme <auto|light|dark>       Page theme (default: auto, following the system light/dark setting live).
+  --theme <name|file>             Page theme. auto (default) and pi-studio follow the system light/dark
+                                  setting live; light, dark, pi-studio-light, pi-studio-dark or the path
+                                  of a Pi theme .json file are fixed.
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --no-open                       Print the URL without opening a browser.
@@ -58,7 +62,6 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--cwd") options.cwd = value();
 		else if (arg === "--theme") {
 			options.theme = value();
-			if (!["auto", "light", "dark"].includes(options.theme)) fail("--theme must be auto, light or dark.");
 		}
 		else if (arg === "--font-size") {
 			options.fontSize = Number(value());
@@ -77,6 +80,19 @@ function parseArgs(argv: string[]) {
 	return options;
 }
 
+/** Theme names: pairs follow the system light/dark setting; the rest are fixed. */
+function resolveTheme(name: string): { style: PreviewStyle; darkStyle?: PreviewStyle; followSystemTheme: boolean } {
+	const load = (theme: string) => {
+		try { return styleForPiTheme(theme); }
+		catch (error) { fail(`Could not load theme ${theme}: ${error instanceof Error ? error.message : String(error)}`); }
+	};
+	if (name === "auto") return { style: styleForMode("light"), darkStyle: styleForMode("dark"), followSystemTheme: true };
+	if (name === "light" || name === "dark") return { style: styleForMode(name), followSystemTheme: false };
+	if (name === "pi-studio") return { style: load("pi-studio-light"), darkStyle: load("pi-studio-dark"), followSystemTheme: true };
+	if (name in BUNDLED_THEMES || name.endsWith(".json")) return { style: load(name), followSystemTheme: false };
+	fail(`Unknown theme "${name}". Use auto, light, dark, pi-studio, pi-studio-light, pi-studio-dark or a Pi theme .json file.`);
+}
+
 function openInBrowser(url: string) {
 	const [command, args] = process.platform === "darwin" ? ["open", [url]]
 		: process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
@@ -90,16 +106,15 @@ async function main() {
 	if (spawnSync(pandoc, ["--version"], { stdio: "ignore" }).error) {
 		fail(`pandoc was not found (${pandoc}). Install it (e.g. brew install pandoc) or set PANDOC_PATH.`);
 	}
-	const followSystemTheme = options.theme === "auto";
-	const style = styleForMode(followSystemTheme ? "light" : options.theme as "light" | "dark");
+	const { style, darkStyle, followSystemTheme } = resolveTheme(options.theme);
 	const log = (message: string) => process.stderr.write(message + "\n");
 	let watch: RunningWatch;
 	try {
 		watch = options.file
-			? await startFileWatch({ filePath: options.file, style, followSystemTheme, fontSizePx: options.fontSize, log })
+			? await startFileWatch({ filePath: options.file, style, followSystemTheme, darkStyle, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
-				: await startSessionIndex({ cwd: options.cwd, style, followSystemTheme, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
+				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}
