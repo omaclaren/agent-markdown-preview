@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -99,4 +99,44 @@ test("session reader: titles from the agent's own name, else the first typed pro
 	])), ["working:true", "title:Plan the week", "title:Weekly plan", "response:pi:a", "working:false", "working:false"]);
 	assert.equal(sessionShortId("/x/3f2a9c1e-1111-4222-8333-444455556666.jsonl"), "6666");
 	assert.equal(sessionShortId("/x/rollout-2026-09-24T01-02-03-01a0e000-1111-7222-8333-4444555591bc.jsonl"), "91bc");
+});
+
+test("Codex sessions are found in every recent date folder, not just the newest match", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "amp-codex-")));
+	const cwd = "/work/project";
+	const yesterday = join(root, "2026", "09", "24"), today = join(root, "2026", "09", "25");
+	mkdirSync(yesterday, { recursive: true });
+	mkdirSync(today, { recursive: true });
+	const header = JSON.stringify({ type: "session_meta", payload: { cwd } }) + "\n";
+	writeFileSync(join(yesterday, "rollout-a.jsonl"), header);
+	writeFileSync(join(today, "rollout-b.jsonl"), header);
+	writeFileSync(join(today, "rollout-c.jsonl"), JSON.stringify({ type: "session_meta", payload: { cwd: "/elsewhere" } }) + "\n");
+	const found = await createSessionFinder({ codex: root })("codex", cwd);
+	assert.deepEqual(found.map(file => file.path.split("/").at(-1)).sort(), ["rollout-a.jsonl", "rollout-b.jsonl"]);
+});
+
+test("the monitor stops following sessions that leave its window and does not replay them on return", async () => {
+	const { createSessionMonitor } = await import("../dist/monitor.js");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "amp-monitor-")));
+	const cwd = "/work/project";
+	const dir = join(root, claudeProjectDirName(cwd));
+	mkdirSync(dir, { recursive: true });
+	const answer = (id, text, offset) => JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() + offset).toISOString(), message: { id, stop_reason: "end_turn", content: [{ type: "text", text }] } }) + "\n";
+	const a = join(dir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), b = join(dir, "00000000-0000-4000-8000-00000000bbbb.jsonl");
+	writeFileSync(a, answer("a1", "A one", -60_000));
+	const monitor = createSessionMonitor({ cwd, roots: { claude: root }, agents: ["claude"], maxPerAgent: 1, rescanMs: 50, tailIntervalMs: 30 });
+	const fresh = [];
+	monitor.onResponse((session, response, isFresh) => { if (isFresh) fresh.push(response.key); });
+	await monitor.ready;
+	const until = async (check, label) => { for (let i = 0; i < 200 && !check(); i++) await new Promise(done => setTimeout(done, 25)); assert.ok(check(), label); };
+	await new Promise(done => setTimeout(done, 20));
+	writeFileSync(b, answer("b1", "B one", 0));
+	await until(() => monitor.sessions().length === 1 && monitor.sessions()[0].shortId === "bbbb", "A displaced by B");
+	await new Promise(done => setTimeout(done, 20));
+	appendFileSync(a, answer("a2", "A two", 1_000));
+	await until(() => monitor.sessions()[0]?.shortId === "aaaa", "A back when it becomes newest");
+	await until(() => fresh.includes("claude:a2"), "A's new answer is fresh");
+	monitor.close();
+	assert.equal(monitor.sessions().length, 1);
+	assert.deepEqual(fresh.filter(key => key.startsWith("claude:a")), ["claude:a2"], "A's earlier answer is not replayed");
 });

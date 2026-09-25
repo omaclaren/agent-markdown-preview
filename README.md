@@ -68,7 +68,7 @@ Run the command in the project directory where you are working with an agent:
 
 The index lists sessions whose logs changed in the last three days, up to eight per agent, most recently active first. Each entry shows the agent, a short session ID, the session title and when the session was last active. The title is the agent's own title for the session when it has one, and otherwise the first prompt. An entry marked **working** has a turn in progress. The index checks for new sessions every two seconds, including the new log an agent starts after `/clear`.
 
-Selecting a session opens its preview in a separate tab; selecting it again returns to that tab. A preview updates when the agent finishes a turn and shows the final response of that turn, which is the text the agent writes after its last tool call. A small caption above each response names the agent, session and time, for example *Claude Code 3f2a · Fit decay model to measurements · 03:05 pm*. **All sessions (merged)** shows the most recent finished response from any session in the directory.
+Selecting a session opens its preview in a new tab, and the index marks sessions whose preview is already open in a tab. A preview updates when the agent finishes a turn and shows the final response of that turn, which is the text the agent writes after its last tool call. A small caption above each response names the agent, session and time, for example *Claude Code 3f2a · Fit decay model to measurements · 03:05 pm*. **All sessions (merged)** shows the most recent finished response from any session in the directory.
 
 Local images in responses are resolved against the project directory; absolute paths and web images also work.
 
@@ -110,7 +110,7 @@ A preview serves its rendered pages and the local images and PDFs they reference
 
 ## Relationship to pi-markdown-preview
 
-agent-markdown-preview uses pi-markdown-preview's browser renderer and watch page, extracted so they run without Pi. Inside Pi, use pi-markdown-preview itself: it also provides terminal image previews, PDF export and colours from your Pi theme.
+agent-markdown-preview uses the browser renderer and watch page from [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview), extracted so they run without Pi. Inside Pi, use pi-markdown-preview itself: it also provides terminal image previews, PDF export and colours from your Pi theme.
 
 ## Development
 

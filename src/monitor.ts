@@ -97,6 +97,9 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	// Sessions whose title came from the agent itself (not a prompt).
 	const named = new Set<string>();
 	const namedTitleSeen = (state: SessionState) => named.has(state.id);
+	// Newest response time already seen in sessions that dropped out of the
+	// window, so a session that becomes active again does not replay them.
+	const seenBeforeDrop = new Map<string, number>();
 
 	async function track(agent: AgentKind, path: string, mtimeMs: number) {
 		const id = sessionId(path);
@@ -125,7 +128,8 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 					state.lastActivity = Math.max(state.lastActivity, response.time);
 					// History: anything read while catching up with a log that existed at
 					// start-up, or older entries in a log discovered later.
-					const fresh = !(backfilling && (initial || response.time < startedAt - clockSkewMs));
+					const seen = seenBeforeDrop.get(path);
+					const fresh = !(backfilling && (initial || response.time < startedAt - clockSkewMs || (seen !== undefined && response.time <= seen)));
 					for (const listener of responseListeners) listener(state, response, fresh);
 				}
 			}
@@ -158,6 +162,19 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 				const files = await find(agent, cwd);
 				const chosen = files.filter(file => now - file.mtimeMs <= recentMs).slice(0, maxPerAgent);
 				for (const file of chosen) await track(agent, file.path, file.mtimeMs);
+				// Stop following sessions that left the window (too old, or displaced
+				// by newer ones), so the limits hold for the whole run.
+				const keep = new Set(chosen.map(file => file.path));
+				let dropped = false;
+				for (const [id, entry] of tracked) {
+					if (entry.state.agent !== agent || keep.has(entry.state.path)) continue;
+					entry.tail.close();
+					tracked.delete(id);
+					named.delete(id);
+					seenBeforeDrop.set(entry.state.path, Math.max(seenBeforeDrop.get(entry.state.path) ?? -Infinity, ...entry.state.history.map(r => r.time)));
+					dropped = true;
+				}
+				if (dropped) changed();
 			}
 		} catch (error) {
 			log(`Session scan failed: ${error instanceof Error ? error.message : String(error)}`);

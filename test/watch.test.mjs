@@ -321,3 +321,54 @@ test("a restarted preview notices a reconnecting tab instead of needing a new on
 	void fetch(new URL("/__pi_markdown_preview_events__?revision=1&latest=1", watch.url), { headers: { cookie }, signal: events.signal }).catch(() => {});
 	assert.equal(await watch.waitForViewer(3_000), true, "a connected page counts as a viewer");
 });
+
+test("a response finishing while a preview renders its history is not lost", { skip, timeout: 60_000 }, async t => {
+	const f = fixture();
+	// A slow pandoc widens the start-up window deterministically.
+	const real = spawnSync("sh", ["-c", "command -v pandoc"], { encoding: "utf8" }).stdout.trim() || "pandoc";
+	const slow = join(f.base, "slow-pandoc");
+	writeFileSync(slow, `#!/bin/sh\nsleep 0.5\nexec "${process.env.PANDOC_PATH || real}" "$@"\n`, { mode: 0o755 });
+	const previous = process.env.PANDOC_PATH;
+	process.env.PANDOC_PATH = slow;
+	t.after(() => { if (previous === undefined) delete process.env.PANDOC_PATH; else process.env.PANDOC_PATH = previous; });
+	const file = join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl");
+	writeFileSync(file, claudeAnswer("a1", "First", iso(-60_000)) + claudeAnswer("a2", "Second", iso(-30_000)));
+	const starting = startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
+	await new Promise(done => setTimeout(done, 250)); // monitor ready, history still rendering
+	appendFileSync(file, claudeAnswer("a3", "Finished during start-up", iso(1_000)));
+	const watch = await starting;
+	t.after(() => watch.close());
+	await waitFor(async () => /Finished during start-up/.test(await page(watch.url)), "response from the start-up window", 15_000);
+});
+
+test("--session with a single --agent works when the log's agent cannot be detected", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	const session = join(f.base, "exported.jsonl");
+	writeFileSync(session, line({ type: "summary", summary: "exported" }) + claudeAnswer("a1", "From an exported log", iso(-1_000)));
+	await assert.rejects(startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, stateDir: null }), /pass --agent/);
+	const watch = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["claude"], stateDir: null });
+	t.after(() => watch.close());
+	assert.match(await page(watch.url), /From an exported log/);
+});
+
+test("the index marks sessions whose preview is open in a tab", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("a1", "Hello", iso(-1_000)));
+	const index = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
+	t.after(() => index.close());
+	const token = new URL(index.url).searchParams.get("token");
+	const api = async () => (await fetch(new URL(`/api/sessions?token=${token}`, index.url))).json();
+	const before = await api();
+	assert.equal(before.sessions[0].open, false);
+	assert.equal(before.mergedOpen, false);
+	const url = (await fetch(new URL(`/open/${before.sessions[0].id}?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
+	assert.equal((await api()).sessions[0].open, false, "a started preview with no tab is not open");
+	const first = await fetch(url);
+	const cookie = first.headers.get("set-cookie").split(";")[0];
+	await first.text();
+	const events = new AbortController();
+	t.after(() => events.abort());
+	void fetch(new URL("/__pi_markdown_preview_events__?revision=1&latest=1", url), { headers: { cookie }, signal: events.signal }).catch(() => {});
+	await waitFor(async () => (await api()).sessions[0].open, "open once a tab is connected");
+	assert.equal((await api()).mergedOpen, false);
+});

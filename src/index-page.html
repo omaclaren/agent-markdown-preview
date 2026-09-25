@@ -44,7 +44,7 @@ footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
 	<p id="cwd"></p>
 	<ul id="list" aria-label="Sessions"></ul>
 	<div id="error" role="alert" hidden></div>
-	<footer>Each entry opens its own live preview tab; clicking again returns to that tab. Sessions active in the last 3 days are listed, most recently active first.</footer>
+	<footer>Each entry opens its live preview in a new tab; entries marked “open” already have a preview tab connected. Sessions active in the last 3 days are listed, most recently active first.</footer>
 </main>
 <script>
 "use strict";
@@ -64,7 +64,9 @@ function row({ id, dotClass, name, shortId, title, when, whenClass }) {
 	const a = document.createElement("a");
 	a.className = "row";
 	a.href = link(id);
-	a.target = "amp-" + id; // Reuse that session's tab when opened again.
+	// Previews isolate themselves from other origins (Cross-Origin-Opener-Policy),
+	// so the browser cannot reuse an existing tab; the list marks open previews.
+	a.target = "_blank";
 	a.rel = "noopener";
 	const dot = document.createElement("span");
 	dot.className = "dot " + (dotClass || "");
@@ -93,14 +95,14 @@ async function refresh() {
 		document.getElementById("cwd").textContent = data.cwd;
 		const list = document.getElementById("list");
 		const rows = [];
-		const all = row({ id: "all", name: "All sessions (merged)", title: "Latest finished response from any session here, labelled by source", when: "", dotClass: data.sessions.some(s => s.working) ? "working" : "recent" });
+		const all = row({ id: "all", name: "All sessions (merged)", title: "Latest finished response from any session here, labelled by source", when: data.mergedOpen ? "open" : "", dotClass: data.sessions.some(s => s.working) ? "working" : "recent" });
 		all.className = "all";
 		rows.push(all);
 		for (const s of data.sessions) {
 			const working = s.working && data.now - s.lastActivity < WORKING_STALE_MS;
 			rows.push(row({
 				id: s.id, name: s.agentLabel, shortId: s.shortId, title: s.title || s.file,
-				when: (working ? "working · " : "") + ago(data.now - s.lastActivity) + ` · ${s.responseCount} ${s.responseCount === 1 ? "response" : "responses"}`,
+				when: (working ? "working · " : "") + ago(data.now - s.lastActivity) + ` · ${s.responseCount} ${s.responseCount === 1 ? "response" : "responses"}` + (s.open ? " · open" : ""),
 				whenClass: working ? "working" : "", dotClass: working ? "working" : data.now - s.lastActivity < 3_600_000 ? "recent" : "",
 			}));
 		}

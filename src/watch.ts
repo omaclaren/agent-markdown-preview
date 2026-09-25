@@ -165,7 +165,7 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 	let sessionPaths: { agent: AgentKind; path: string }[] | undefined;
 	if (options.sessionPath) {
 		const path = await realpath(resolve(options.sessionPath));
-		const agent = options.sessionAgent ?? await detectAgent(path);
+		const agent = options.sessionAgent ?? await detectAgent(path) ?? (options.agents?.length === 1 ? options.agents[0] : null);
 		if (!agent) throw new Error(`Could not tell which agent wrote ${path}; pass --agent claude|codex|pi.`);
 		sessionPaths = [{ agent, path }];
 	}
@@ -206,9 +206,17 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 	const base = await openMonitor(options);
 	const pinned = options.sessionPath ? base.monitor.sessions()[0] : null;
 	const label = pinned ? sessionLabel(pinned) : `All sessions · ${basename(base.cwd) || base.cwd}`;
-	const view = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`);
-	base.monitor.onResponse((_session, response, fresh) => { if (fresh || response.key === view.shownKey) view.show(response); });
-	return { url: view.url, label, reused: view.reused, waitForViewer: ms => pollFor(() => view.clientCount > 0, ms), async close() { base.monitor.close(); await view.close(); } };
+	// Listen before rendering the history: a turn can finish while it renders.
+	let view: ResponseView | null = null;
+	const arrivedDuringStart: AgentResponse[] = [];
+	base.monitor.onResponse((_session, response, fresh) => {
+		if (!view) { if (fresh) arrivedDuringStart.push(response); }
+		else if (fresh || response.key === view.shownKey) view.show(response);
+	});
+	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`);
+	view = started;
+	for (const response of arrivedDuringStart.splice(0)) started.show(response);
+	return { url: started.url, label, reused: started.reused, waitForViewer: ms => pollFor(() => started.clientCount > 0, ms), async close() { base.monitor.close(); await started.close(); } };
 }
 
 const INDEX_PAGE = readFileSync(new URL("./index-page.html", import.meta.url), "utf8");
@@ -224,6 +232,8 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 	const slots = slotStore(options.stateDir);
 	let token = "", lastPollAt = 0;
 	const views = new Map<string, Promise<ResponseView>>();
+	const started = new Map<string, ResponseView>();
+	const hasOpenTab = (id: string) => (started.get(id)?.clientCount ?? 0) > 0;
 	const label = `${basename(cwd) || cwd}`;
 	const viewPrefix = `${cwd}|index-view|`;
 
@@ -239,7 +249,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 				slots, slotKey: `${viewPrefix}session|${session.path}` })
 			: mergedView(monitor, base, options, `All sessions · ${label}`, `${viewPrefix}all`);
 		views.set(id, created);
-		created.catch(() => views.delete(id));
+		created.then(v => started.set(id, v), () => views.delete(id));
 		return created;
 	}
 	monitor.onResponse((session, response, fresh) => {
@@ -268,9 +278,9 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 				lastPollAt = Date.now();
 				const sessions = monitor.sessions().map(s => ({
 					id: s.id, agent: s.agent, agentLabel: AGENT_LABELS[s.agent], shortId: s.shortId, title: s.title, working: s.working,
-					lastActivity: s.lastActivity, responseCount: s.responseCount, file: basename(s.path),
+					lastActivity: s.lastActivity, responseCount: s.responseCount, file: basename(s.path), open: hasOpenTab(s.id),
 				}));
-				return send(200, JSON.stringify({ cwd, label, now: Date.now(), sessions }), "application/json");
+				return send(200, JSON.stringify({ cwd, label, now: Date.now(), sessions, mergedOpen: hasOpenTab("all") }), "application/json");
 			}
 			const open = url.pathname.match(/^\/open\/(all|[0-9a-f]{16})$/);
 			if (open) {

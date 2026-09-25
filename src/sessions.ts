@@ -221,7 +221,7 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 		for (const year of await listDesc(roots.codex)) {
 			for (const month of await listDesc(join(roots.codex, year))) {
 				for (const day of await listDesc(join(roots.codex, year, month))) {
-					if (++days > codexDayLimit) return matches;
+					if (++days > codexDayLimit) return matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
 					const files = await jsonlFilesNewestFirst(join(roots.codex, year, month, day), "codex", name => name.startsWith("rollout-") && name.endsWith(".jsonl"));
 					for (const file of files) {
 						if (!codexCwdCache.has(file.path)) {
@@ -232,11 +232,12 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 						}
 						if (codexCwdCache.get(file.path) === cwd) matches.push(file);
 					}
-					if (matches.length) return matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
 				}
 			}
 		}
-		return matches;
+		// A session stays in the folder of the day it started, so a still-active
+		// session from an earlier day must not be hidden by today's.
+		return matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
 	}
 	return async function find(agent: AgentKind, cwd: string): Promise<SessionFile[]> {
 		if (agent === "claude") return roots.claude ? jsonlFilesNewestFirst(join(roots.claude, claudeProjectDirName(cwd)), agent) : [];
