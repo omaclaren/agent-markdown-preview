@@ -1,6 +1,6 @@
 {
 	"name": "agent-markdown-preview",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"description": "Browser preview of coding-agent responses (Claude Code, Codex, Pi) and local Markdown, LaTeX, code and diff files, with math, syntax highlighting and Mermaid.",
 	"keywords": [
 		"claude-code",
