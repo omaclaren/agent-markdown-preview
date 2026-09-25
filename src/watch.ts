@@ -7,6 +7,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
 import { basename, dirname, resolve } from "node:path";
 import { createSessionMonitor, type SessionMonitor, type SessionState } from "./monitor.js";
+import { localDocumentRenderer } from "./linked-documents.js";
 import {
 	buildBrowserHtmlFromPandocFragment, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX,
 	normalizePreviewFontSizePx, prepareFilePreview, renderPreviewHtmlDocument, type PreviewStyle,
@@ -97,6 +98,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		?? options.finish(buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx));
 	const { started: server, reused } = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
 		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
+		renderLocalDocument: localDocumentRenderer(options.style, options.fontSizePx, options.finish),
 	}));
 	for (const { html } of seeded.slice(1)) server.updateDocument(html, { appendToHistory: true });
 	const shown = seeded.at(-1)?.response;
@@ -357,6 +359,7 @@ export async function startFileWatch(options: FileWatchOptions): Promise<Running
 	const label = basename(path);
 	const { started: server, reused } = await startAtSlot(slotStore(options.stateDir), `file|${path}`, (port, token) => createBrowserWatchServer(initial.html, resourcePath, {
 		initialDocumentIsHistory: true, sourceLabel: label, preserveReadingPosition: true, port, token, ...PAGE_TEXT,
+		renderLocalDocument: localDocumentRenderer(style, fontSizePx, finish),
 	}));
 
 	let lastHash = first.contentHash, lastError: string | undefined, closed = false, inFlight = false, queued = false;

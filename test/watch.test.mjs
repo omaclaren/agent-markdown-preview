@@ -316,10 +316,8 @@ test("a restarted preview notices a reconnecting tab instead of needing a new on
 	const pageResponse = await fetch(watch.url);
 	const cookie = pageResponse.headers.get("set-cookie").split(";")[0];
 	await pageResponse.text();
-	const events = new AbortController();
-	t.after(() => events.abort());
-	void fetch(new URL("/__pi_markdown_preview_events__?revision=1&latest=1", watch.url), { headers: { cookie }, signal: events.signal }).catch(() => {});
-	assert.equal(await watch.waitForViewer(3_000), true, "a connected page counts as a viewer");
+	await (await fetch(new URL(`/__pi_markdown_preview_state__?client=${"a".repeat(32)}`, watch.url), { headers: { cookie } })).json();
+	assert.equal(await watch.waitForViewer(3_000), true, "a recently polling page counts as a viewer");
 });
 
 test("a response finishing while a preview renders its history is not lost", { skip, timeout: 60_000 }, async t => {
@@ -339,6 +337,48 @@ test("a response finishing while a preview renders its history is not lost", { s
 	const watch = await starting;
 	t.after(() => watch.close());
 	await waitFor(async () => /Finished during start-up/.test(await page(watch.url)), "response from the start-up window", 15_000);
+});
+
+test("deep backfill updates open merged previews in response order", { skip, timeout: 60_000 }, async t => {
+	for (const withTailResponse of [false, true]) await t.test(withTailResponse ? "with a newer response in the tail" : "all responses outside the tail", async t => {
+		const f = fixture();
+		const directRendered = [], indexRendered = [];
+		const options = { cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast };
+		const direct = await startResponseWatch({ ...options, onRendered: r => directRendered.push(r.key) });
+		t.after(() => direct.close());
+		const index = await startSessionIndex({ ...options, onRendered: r => indexRendered.push(r.key) });
+		t.after(() => index.close());
+		const token = new URL(index.url).searchParams.get("token");
+		const mergedUrl = (await fetch(new URL(`/open/all?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
+		const urls = [direct.url, mergedUrl];
+		for (const url of urls) assert.match(await page(url), /Waiting for the next completed response/);
+
+		const file = join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl");
+		const toolOutput = line({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t", content: "x".repeat(50_000) }] } }).repeat(50);
+		// Both fresh answers precede 2.5 MB of tool output, outside the 2 MB tail.
+		writeFileSync(file, claudeAnswer("old", "Historical answer", iso(-86_400_000))
+			+ claudeAnswer("a1", "Recovered answer one", iso(1_000))
+			+ claudeAnswer("a2", "Recovered answer two", iso(2_000)) + toolOutput
+			+ (withTailResponse ? claudeAnswer("a3", "Newer tail answer", iso(3_000)) : ""));
+		const expectedKeys = ["claude:a1", "claude:a2", ...(withTailResponse ? ["claude:a3"] : [])];
+		const expectedText = ["Recovered answer one", "Recovered answer two", ...(withTailResponse ? ["Newer tail answer"] : [])];
+		await waitFor(() => directRendered.length >= expectedKeys.length && indexRendered.length >= expectedKeys.length, "fresh answers recovered by deep backfill");
+		assert.deepEqual(directRendered, expectedKeys);
+		assert.deepEqual(indexRendered, expectedKeys, "the index's merged preview also receives the recovered answers");
+
+		appendFileSync(file, claudeAnswer("a4", "Subsequent live answer", iso(4_000)));
+		await waitFor(() => directRendered.includes("claude:a4") && indexRendered.includes("claude:a4"), "subsequent live answer");
+		for (const url of urls) {
+			const texts = [];
+			for (const revision of await revisionsOf(url)) {
+				const html = await atRevision(url, revision);
+				assert.doesNotMatch(html, /Historical answer/);
+				texts.push(html.match(/Recovered answer (?:one|two)|Newer tail answer|Subsequent live answer/)?.[0]);
+			}
+			assert.deepEqual(texts, [...expectedText, "Subsequent live answer"], "history stays ordered, without duplicates or old answers");
+			assert.match(await page(url), /Subsequent live answer/);
+		}
+	});
 });
 
 test("--session with a single --agent works when the log's agent cannot be detected", { skip, timeout: 30_000 }, async t => {
@@ -366,9 +406,11 @@ test("the index marks sessions whose preview is open in a tab", { skip, timeout:
 	const first = await fetch(url);
 	const cookie = first.headers.get("set-cookie").split(";")[0];
 	await first.text();
-	const events = new AbortController();
-	t.after(() => events.abort());
-	void fetch(new URL("/__pi_markdown_preview_events__?revision=1&latest=1", url), { headers: { cookie }, signal: events.signal }).catch(() => {});
-	await waitFor(async () => (await api()).sessions[0].open, "open once a tab is connected");
+	const stateUrl = new URL(`/__pi_markdown_preview_state__?client=${"a".repeat(32)}`, url);
+	await (await fetch(stateUrl, { headers: { cookie } })).json();
+	await waitFor(async () => (await api()).sessions[0].open, "open once a tab polls");
 	assert.equal((await api()).mergedOpen, false);
+	stateUrl.searchParams.set("closed", "1");
+	await fetch(stateUrl, { method: "POST", headers: { cookie } });
+	await waitFor(async () => !(await api()).sessions[0].open, "not open after the tab releases its lease");
 });

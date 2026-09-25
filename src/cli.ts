@@ -23,10 +23,13 @@ Options:
                                   of a Pi theme .json file are fixed.
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
-  --no-open                       Print the URL without opening a browser.
+  --open                          Open a browser tab even at a remembered address.
+  --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
   -v, --version                   Show the version.
 
+A new address opens in the browser by default; restarting at a remembered address
+only reconnects existing tabs. Use --open to request another tab.
 Previews update when a turn finishes. Use their history controls for earlier
 responses or file versions. Requires pandoc (set PANDOC_PATH if it is not on PATH).`;
 
@@ -36,7 +39,7 @@ function fail(message: string): never {
 }
 
 function parseArgs(argv: string[]) {
-	const options = { agents: [] as AgentKind[], merged: false, history: undefined as number | undefined, session: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: true, file: undefined as string | undefined };
+	const options = { agents: [] as AgentKind[], merged: false, history: undefined as number | undefined, session: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		const value = () => {
@@ -71,7 +74,8 @@ function parseArgs(argv: string[]) {
 			options.history = Number(value());
 			if (!Number.isInteger(options.history) || options.history < 0 || options.history > 20) fail("--history needs a whole number from 0 to 20.");
 		}
-		else if (arg === "--no-open") options.open = false;
+		else if (arg === "--open") options.open = "always";
+		else if (arg === "--no-open") options.open = "never";
 		else if (arg.startsWith("-")) fail(`Unknown option ${arg}. See --help.`);
 		else if (options.file) fail("Only one file can be watched per command.");
 		else options.file = arg;
@@ -119,15 +123,13 @@ async function main() {
 		fail(error instanceof Error ? error.message : String(error));
 	}
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
-	// After a restart at the same address, an open tab reconnects by itself;
-	// only open another if none does within a few seconds.
-	if (options.open) {
-		if (watch.reused && await watch.waitForViewer(6_000)) process.stdout.write("An open tab reconnected, so no new one was opened.\n");
-		else openInBrowser(watch.url);
-	}
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);
 	process.on("SIGTERM", stop);
+	// Background/suspended tabs may not check in promptly. Do not infer that
+	// they were closed from a timeout; opening again is explicit on restarts.
+	if (options.open === "always" || (options.open === "auto" && !watch.reused)) openInBrowser(watch.url);
+	else if (options.open === "auto") process.stdout.write("Reusing the saved address; no new tab opened. Use --open if you need one.\n");
 }
 
 void main();

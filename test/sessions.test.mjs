@@ -150,17 +150,49 @@ test("history reaches back past large tool output at the end of a long log", asy
 	const answer = (id, text, offset) => JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() + offset).toISOString(), message: { id, stop_reason: "end_turn", content: [{ type: "text", text }] } }) + "\n";
 	const toolOutput = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t", content: "x".repeat(50_000) }] } }) + "\n";
 	let log = "";
-	for (let n = 1; n <= 15; n++) log += answer(`a${n}`, `Answer ${n}`, -100_000 + n * 1_000);
+	// Recent timestamps would qualify as fresh in a log discovered later, but
+	// this log already exists at startup, including its deeply recovered answers.
+	for (let n = 1; n <= 15; n++) log += answer(`a${n}`, `Answer ${n}`, n * 100);
 	for (let n = 0; n < 4; n++) log += toolOutput; // 200 kB of tool output
-	log += answer("a16", "Answer 16", -1_000) + answer("a17", "Answer 17", 0);
+	log += answer("a16", "Answer 16", 1_600) + answer("a17", "Answer 17", 1_700);
 	writeFileSync(join(dir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), log);
 	// A small tail window stands in for 2 MB against multi-megabyte logs.
 	const monitor = createSessionMonitor({ cwd, roots: { claude: root }, agents: ["claude"], maxBackfillBytes: 150_000, rescanMs: 60_000 });
+	const fresh = [];
+	monitor.onResponse((_session, response, isFresh) => { if (isFresh) fresh.push(response.key); });
 	await monitor.ready;
 	const [session] = monitor.sessions();
 	monitor.close();
+	assert.deepEqual(fresh, [], "startup history is never fresh, including the deeply recovered responses");
 	assert.equal(session.history.length, 17, "all 17 responses, not just the 2 in the tail window");
 	assert.deepEqual(session.history.slice(0, 2).map(r => r.markdown), ["Answer 1", "Answer 2"]);
 	assert.equal(session.history.at(-1).markdown, "Answer 17");
 	assert.equal(session.latest.markdown, "Answer 17");
+});
+
+test("deep backfill notifies for a returning session's new answers, not answers seen before eviction", { timeout: 15_000 }, async t => {
+	const { createSessionMonitor } = await import("../dist/monitor.js");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "amp-deep-return-")));
+	const cwd = "/work/project";
+	const dir = join(root, claudeProjectDirName(cwd));
+	mkdirSync(dir, { recursive: true });
+	const answer = (id, offset) => JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() + offset).toISOString(), message: { id, stop_reason: "end_turn", content: [{ type: "text", text: id }] } }) + "\n";
+	const a = join(dir, "a.jsonl"), b = join(dir, "b.jsonl");
+	writeFileSync(a, answer("a1", 0));
+	const monitor = createSessionMonitor({ cwd, roots: { claude: root }, agents: ["claude"], maxPerAgent: 1, maxBackfillBytes: 150_000, rescanMs: 50, tailIntervalMs: 30 });
+	t.after(() => monitor.close());
+	const fresh = [];
+	monitor.onResponse((_session, response, isFresh) => { if (isFresh) fresh.push(response.key); });
+	await monitor.ready;
+	const until = async (check, label) => { for (let i = 0; i < 200 && !check(); i++) await new Promise(done => setTimeout(done, 25)); assert.ok(check(), label); };
+	await new Promise(done => setTimeout(done, 20));
+	writeFileSync(b, answer("b1", 1_000));
+	await until(() => monitor.sessions().length === 1 && monitor.sessions()[0].path === b, "A evicted");
+	await new Promise(done => setTimeout(done, 20));
+	const toolOutput = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t", content: "x".repeat(50_000) }] } }) + "\n";
+	appendFileSync(a, answer("a2", 2_000) + toolOutput.repeat(4));
+	await until(() => monitor.sessions()[0]?.latest?.key === "claude:a2", "A's new answer recovered outside the tail");
+	await until(() => fresh.includes("claude:a2"), "A's recovered answer notifies listeners");
+	assert.deepEqual(fresh, ["claude:b1", "claude:a2"], "A's recently seen a1 is not replayed on return");
+	assert.deepEqual(monitor.sessions()[0].history.map(r => r.key), ["claude:a1", "claude:a2"]);
 });

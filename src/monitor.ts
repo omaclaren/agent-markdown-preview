@@ -141,6 +141,16 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		const entry = { state, tail: null as unknown as JsonlTail, initial };
 		tracked.set(id, entry);
 		let backfilling = true;
+		// Hold tail notifications until the deeper history is merged, so recovered
+		// answers are delivered before any newer answers already found in the tail.
+		let pendingResponses: { response: AgentResponse; fresh: boolean }[] | null = [];
+		const backfillIsFresh = (response: AgentResponse) => {
+			const seen = seenBeforeDrop.get(path);
+			return !initial && response.time >= startedAt - clockSkewMs && (seen === undefined || response.time > seen);
+		};
+		const notifyResponse = (response: AgentResponse, fresh: boolean) => {
+			for (const listener of responseListeners) listener(state, response, fresh);
+		};
 		entry.tail = tailJsonl(path, value => {
 			for (const event of read(value)) {
 				if (event.kind === "title") { state.title = event.title; if (event.named) named.add(id); }
@@ -159,25 +169,28 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 					state.lastActivity = Math.max(state.lastActivity, response.time);
 					// History: anything read while catching up with a log that existed at
 					// start-up, or older entries in a log discovered later.
-					const seen = seenBeforeDrop.get(path);
-					const fresh = !(backfilling && (initial || response.time < startedAt - clockSkewMs || (seen !== undefined && response.time <= seen)));
-					for (const listener of responseListeners) listener(state, response, fresh);
+					const fresh = !backfilling || backfillIsFresh(response);
+					if (pendingResponses) pendingResponses.push({ response, fresh });
+					else notifyResponse(response, fresh);
 				}
 			}
-			if (!backfilling) changed();
+			if (!pendingResponses) changed();
 		}, { intervalMs: options.tailIntervalMs, maxBackfillBytes: options.maxBackfillBytes ?? 2_000_000, onError: error => log(`Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`) });
 		await entry.tail.ready;
+		if (closed) return;
 		backfilling = false;
 		// The tail starts near the end of the log; fill the history from further
 		// back when that part held too few responses.
 		if (state.history.length < SESSION_HISTORY) {
 			const earlier = await recentResponses(agent, path, SESSION_HISTORY).catch(() => []);
+			if (closed) return;
 			const known = new Set(state.history.map(r => r.key));
 			const older = earlier.filter(r => !known.has(r.key) && (state.history.length === 0 || r.time <= state.history[0]!.time));
 			if (older.length) {
 				state.history = [...older, ...state.history].slice(-SESSION_HISTORY);
 				state.responseCount = Math.max(state.responseCount, state.history.length);
 				if (!state.latest) state.latest = state.history.at(-1) ?? null;
+				pendingResponses.unshift(...older.map(response => ({ response, fresh: backfillIsFresh(response) })));
 			}
 		}
 		// The tail starts near the end of long logs, so a prompt-based title would
@@ -185,6 +198,13 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		if (!state.title || !namedTitleSeen(state)) {
 			const first = await firstPromptTitle(agent, path).catch(() => null);
 			if (first && !namedTitleSeen(state)) state.title = first;
+		}
+		if (closed) return;
+		const pending = pendingResponses;
+		pendingResponses = null;
+		for (const { response, fresh } of pending) {
+			if (closed) return;
+			notifyResponse(response, fresh);
 		}
 		changed();
 	}
