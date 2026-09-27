@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { AGENTS, type AgentKind } from "./sessions.js";
+import { AGENTS, defaultSessionRoots, type AgentKind } from "./sessions.js";
 import { BUNDLED_THEMES, styleForPiTheme } from "./pi-theme.js";
 import type { PreviewStyle } from "./render.js";
 import { startFileWatch, startResponseWatch, startSessionIndex, styleForMode, type RunningWatch } from "./watch.js";
@@ -14,9 +14,11 @@ Usage:
   agent-markdown-preview <file> [options]   Watch a Markdown, LaTeX, code or diff file
 
 Options:
-  --agent <claude|codex|pi|all>   Agents to follow (default: all). Repeatable or comma-separated.
+  --agent <name|all>              claude, codex, pi, opencode (default: all). Repeatable/comma-separated.
+  -a, --all-projects             Index recent sessions across folders, grouped by project.
   --merged                        Open the merged preview directly instead of the session index.
-  --session <path>                Preview one session log directly.
+  --session <path|ses_id>         Preview one JSONL log or OpenCode session ID directly.
+  --opencode-db <path>            Custom OpenCode SQLite database (default: XDG data/opencode/opencode.db).
   --cwd <dir>                     Project directory whose sessions to follow (default: current).
   --theme <name|file>             Page theme. auto (default) and pi-studio follow the system light/dark
                                   setting live; light, dark, pi-studio-light, pi-studio-dark or the path
@@ -39,7 +41,7 @@ function fail(message: string): never {
 }
 
 function parseArgs(argv: string[]) {
-	const options = { agents: [] as AgentKind[], merged: false, history: undefined as number | undefined, session: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
+	const options = { agents: [] as AgentKind[], allProjects: false, cwdExplicit: false, merged: false, history: undefined as number | undefined, session: undefined as string | undefined, opencodeDb: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		const value = () => {
@@ -57,12 +59,14 @@ function parseArgs(argv: string[]) {
 			for (const name of value().split(",")) {
 				if (name === "all") options.agents.push(...AGENTS);
 				else if ((AGENTS as readonly string[]).includes(name)) options.agents.push(name as AgentKind);
-				else fail(`Unknown agent "${name}". Use claude, codex, pi or all.`);
+				else fail(`Unknown agent "${name}". Use claude, codex, pi, opencode or all.`);
 			}
 		}
 		else if (arg === "--session") options.session = value();
+		else if (arg === "--opencode-db") options.opencodeDb = value();
 		else if (arg === "--merged") options.merged = true;
-		else if (arg === "--cwd") options.cwd = value();
+		else if (arg === "--all-projects" || arg === "-a") options.allProjects = true;
+		else if (arg === "--cwd") { options.cwd = value(); options.cwdExplicit = true; }
 		else if (arg === "--theme") {
 			options.theme = value();
 		}
@@ -80,7 +84,8 @@ function parseArgs(argv: string[]) {
 		else if (options.file) fail("Only one file can be watched per command.");
 		else options.file = arg;
 	}
-	if (options.file && (options.session || options.merged || options.agents.length)) fail("--agent, --merged and --session apply to agent sessions, not file watching.");
+	if (options.file && (options.session || options.merged || options.agents.length || options.opencodeDb || options.allProjects)) fail("--agent, --merged, --session, --all-projects and --opencode-db apply to agent sessions, not file watching.");
+	if (options.allProjects && (options.session || options.merged || options.cwdExplicit)) fail("--all-projects is an index mode; do not combine with --cwd, --session or --merged. Choose Merged within a folder in the index.");
 	return options;
 }
 
@@ -112,13 +117,14 @@ async function main() {
 	}
 	const { style, darkStyle, followSystemTheme } = resolveTheme(options.theme);
 	const log = (message: string) => process.stderr.write(message + "\n");
+	const roots = options.opencodeDb ? { ...defaultSessionRoots(), opencode: options.opencodeDb } : undefined;
 	let watch: RunningWatch;
 	try {
 		watch = options.file
 			? await startFileWatch({ filePath: options.file, style, followSystemTheme, darkStyle, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, fontSizePx: options.fontSize, historyFill: options.history, log })
-				: await startSessionIndex({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
+				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, roots, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, allProjects: options.allProjects, roots, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}

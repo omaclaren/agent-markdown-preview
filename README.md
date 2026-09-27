@@ -1,6 +1,6 @@
 # agent-markdown-preview
 
-Preview coding-agent responses and local Markdown, LaTeX, code and diff files in the browser, with math rendering, syntax highlighting, Mermaid diagrams and light/dark styling. It works alongside [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) and [Pi](https://pi.dev) by reading the session logs each agent already writes.
+Preview coding-agent responses and local Markdown, LaTeX, code and diff files in the browser, with math rendering, syntax highlighting, Mermaid diagrams and light/dark styling. It works alongside [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) and [OpenCode](https://opencode.ai) by reading the session history each agent already writes.
 
 ## Screenshots
 
@@ -16,7 +16,7 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 
 ## Features
 
-- **Session index** — lists the recently active Claude Code, Codex and Pi sessions for a project with their titles, whether a turn is in progress and when each was last active. Sessions started later appear automatically.
+- **Session index** — lists the recently active Claude Code, Codex, Pi and OpenCode sessions for a project with their titles, whether a turn is in progress and when each was last active. Sessions started later appear automatically. `--all-projects` groups sessions across folders in one index.
 - **Live response previews** — each session opens in its own tab and updates when the agent finishes a turn. A merged view shows the latest response from any session, labelled by source.
 - **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
 - **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
@@ -26,7 +26,7 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 
 ## Requirements
 
-- Node.js 22 or later
+- Node.js 22 or later (22.13+ for OpenCode's SQLite reader; Bun uses its own SQLite driver)
 - [Pandoc](https://pandoc.org/installing.html) (`brew install pandoc` on macOS). Set `PANDOC_PATH` if it is not on your `PATH`.
 - A web browser. Mermaid diagrams, the MathJax fallback for some equations and PDF figures load pinned modules from jsDelivr or unpkg the first time a page needs them, so those features need network access.
 
@@ -51,14 +51,17 @@ Run the command in the project directory where you are working with an agent:
 | Command | Description |
 |---------|-------------|
 | `agent-markdown-preview` | Open the session index for the current directory |
+| `agent-markdown-preview --all-projects` | Open a cross-folder index, grouped by project |
 | `agent-markdown-preview --merged` | Open one preview showing the latest response from any session here |
-| `agent-markdown-preview --session <path>` | Preview a single session log |
+| `agent-markdown-preview --session <path\|ses_id>` | Preview a single session log or OpenCode session |
 | `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
 
 | Option | Description |
 |--------|-------------|
-| `--agent claude,codex,pi` | Agents to follow (default: all) |
+| `--agent claude,codex,pi,opencode` | Agents to follow (default: all) |
 | `--cwd <dir>` | Project directory whose sessions to follow (default: current directory) |
+| `-a`, `--all-projects` | Discover recent sessions across folders instead of just the current directory |
+| `--opencode-db <path>` | OpenCode SQLite file instead of the default XDG data location |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
 | `--theme <name\|file>` | `auto` (default) or `pi-studio` follows the system light/dark setting; `light`, `dark`, `pi-studio-light`, `pi-studio-dark` or a Pi theme `.json` file fixes the theme |
 | `--font-size <px>` | Base font size |
@@ -67,13 +70,30 @@ Run the command in the project directory where you are working with an agent:
 
 ### Sessions and previews
 
-The index lists sessions whose logs changed in the last three days, up to eight per agent, most recently active first. Each entry shows the agent, a short session ID, the session title and when the session was last active. The title is the agent's own title for the session when it has one, and otherwise the first prompt. An entry marked **working** has a turn in progress. The index checks for new sessions every two seconds, including the new log an agent starts after `/clear`.
+The index lists sessions whose history changed in the last three days, up to eight per agent, most recently active first. Each entry shows the agent, a short session ID, the session title and when the session was last active. The title is the agent's own title for the session when it has one, and otherwise the first prompt. An entry marked **working** has a turn in progress. The index checks for new sessions every two seconds, including the new log an agent starts after `/clear`.
 
 Selecting a session opens its preview in a new tab, and the index marks sessions whose preview has checked in recently. Suspended or heavily throttled background tabs may lose the **open** marker until they check in again. A preview updates when the agent finishes a turn and shows the final response of that turn, which is the text the agent writes after its last tool call. A small caption above each response names the agent, session and time, for example *Claude Code 3f2a · Fit decay model to measurements · 03:05 pm*. **All sessions (merged)** shows the most recent finished response from any session in the directory.
 
 Active preview tabs check for new rendered responses every 200 ms using small, short-lived requests. Background tabs check less often and check immediately when brought to the foreground. Unchanged responses are not re-rendered or reloaded, and opening multiple tabs does not reserve a permanent connection per tab. Previous/Next navigation does not wait for a check.
 
 Local images in responses are resolved against the project directory; absolute paths and web images also work.
+
+### Across project folders
+
+`-a` is shorthand for `--all-projects`.
+
+```bash
+agent-markdown-preview --all-projects
+agent-markdown-preview -a --agent claude,opencode
+```
+
+![Cross-project session index](screenshots/all-projects.png)
+
+Folders are grouped by their recorded full path, with the most recently active group first. The folder name is prominent and its full path appears underneath, so two folders named `app` remain distinct. Each group has individual session previews and a **Merged preview** for that folder only. Relative images and document links use the session's own project directory, not the directory where you launched the index.
+
+The same three-day activity window applies, with up to eight sessions per agent per folder and **64 followed sessions total**, newest first. Discovery reads the agents' existing storage locations, not a recursive scan of your projects. It inspects at most 512 recent candidate logs per agent per scan; Codex retains its 45-date-folder discovery window. Logs without a recognised absolute working directory are omitted rather than guessing from encoded filenames. New sessions and folders appear automatically. Rendering starts when you open a preview.
+
+This mode has its own remembered address, independent of the launch directory. The ordinary current-folder view is unchanged. `--all-projects` cannot be combined with `--cwd`, `--session`, a file argument or `--merged`; choose the merged preview within a folder instead. There is no cross-folder merged response feed in this version.
 
 ### Local document links
 
@@ -105,19 +125,37 @@ With `--theme auto` (the default), pages follow the browser's light/dark setting
 
 ### How responses are found
 
-Each agent writes its session to a JSONL file. agent-markdown-preview reads these files and leaves them unchanged; it needs no configuration in the agents themselves.
+Claude Code, Codex and Pi write JSONL logs; OpenCode uses SQLite. agent-markdown-preview reads this history without changing it and needs no configuration in the agents themselves.
 
 | Agent | Session logs | Final response of a turn |
 |---|---|---|
 | Claude Code | `~/.claude/projects/<directory>/*.jsonl` (respects `CLAUDE_CONFIG_DIR`) | the assistant message that ends the turn (`stop_reason: end_turn`), with its text blocks joined |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (respects `CODEX_HOME`), matched by the working directory recorded in each file | `task_complete` event, `last_agent_message` |
 | Pi | `~/.pi/agent/sessions/--<directory>--/*.jsonl` | assistant message with `stopReason: "stop"` |
+| OpenCode v1 | `~/.local/share/opencode/opencode.db` (respects `XDG_DATA_HOME`) | completed assistant message with a terminal finish reason, text from its separate parts |
+| OpenCode v2 | Same database; `session_v2` / `session_message` | last completed text answer before the turn's explicit `idle` marker; ordered by message sequence |
 
-Subagent messages are skipped. These log formats are internal to each agent and can change between releases. Entries the tool does not recognise are ignored, so a format change shows up as missing previews rather than errors. OpenCode and Gemini CLI sessions are not supported yet.
+Subagent sessions are excluded from discovery. These formats are internal to each agent and can change between releases. Unrecognised entries are ignored; an unsupported OpenCode database schema is reported without preventing other agents from being followed. Gemini CLI is not supported yet.
+
+#### OpenCode / OpenCode 2
+
+Use `--agent opencode` for both versions. The adapter checks the database schema rather than the executable's name. When both schemas contain a migrated session, v2 wins and the session appears only once. Imported v1 answers retain their history even though they predate v2's idle markers. Reasoning, tool output, compaction summaries and unfinished responses are excluded.
+
+```bash
+agent-markdown-preview --agent opencode
+agent-markdown-preview --session ses_YOUR_SESSION_ID
+agent-markdown-preview --agent opencode --opencode-db /path/to/opencode.db
+```
+
+`--session` accepts an OpenCode `ses_…` ID (including archived or child sessions) as well as the other agents' log paths. It can be combined with `--opencode-db`. Discovery matches the stored working directory exactly and excludes archived sessions.
+
+The database is opened read-only, with no OpenCode process, server, export or migration command. Short snapshot reads include committed WAL updates; polling every 300 ms detects in-place message edits and waits for v2 turn settlement. At most 20 answers are retained, selected from the newest 256 completed candidates, with a 2 MiB text limit per answer. These are stored transcript answers, not a reconstruction of the model's compacted context or staged undo state. The old pre-SQLite `storage/session`, `storage/message` and `storage/part` JSON directories and JSON exports are not read.
+
+The adapter follows the v1 SQLite layout and the refactored v2.0.16 [session tables](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/session/sql.ts) and [message schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session-message.ts). Node 22 may print its experimental SQLite warning when this reader is first used; no native dependency needs installing.
 
 ### Security
 
-The index and every preview listen only on `127.0.0.1`. Each has its own random token, which the page exchanges for a browser cookie on first load. Anyone with a preview's link can read that preview, and the index link lists your sessions, so treat these links as private. The **Copy link** control produces a fresh link for another browser. The remembered-addresses file contains the tokens and is readable only by you.
+The index and every preview listen only on `127.0.0.1`. Each has its own random token, which the page exchanges for a browser cookie on first load. Anyone with a preview's link can read that preview, and the index link lists your sessions, so treat these links as private. An `--all-projects` index link grants access to the listed sessions across folders, not just one project. The **Copy link** control produces a fresh link for another browser. The remembered-addresses file contains the tokens and is readable only by you.
 
 A preview serves its rendered pages, their referenced images/PDFs, and supported documents explicitly linked from retained responses or recently opened documents. These routes require the preview's cookie; there is no directory browser or arbitrary file-path endpoint. Anyone with the original preview link can also follow its local document links, including links outside the project, so share it only with that access in mind. Following a session does not automatically expose its log file. Authored HTML runs in an opaque-origin sandbox on a separate loopback server, not in the authenticated preview DOM. The selected page is a snapshot; relative CSS, JS/modules, images, fonts and Wasm assets are served live from its directory and subdirectories. Canonical containment checks block escapes and symlinks outside that directory; dot paths, sibling HTML documents, PDFs and non-asset files are not served by this asset server. HTTPS resources and requests from authored scripts are allowed, so this is not network isolation. The viewer itself does not upload local files to an online service. Keep its capability URLs private: they grant access to the page and these allowed assets. The server stops with its parent watcher. Forms, nested frames, local storage and general web-app hosting are outside this page-viewing mode's scope.
 

@@ -1,9 +1,9 @@
-// Follows every recently active agent session in one directory. Each session log
-// is tailed continuously from where it left off, so several concurrent sessions
-// (of one agent or several) are all observed without switching or re-reading.
+// Follows recently active agent sessions in one directory or across projects. Each session log
+// is tailed continuously; OpenCode's mutable SQLite projections are polled via
+// read-only snapshots. Several concurrent sessions can be followed together.
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
-import { AGENTS, createSessionFinder, createSessionReader, sessionShortId, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
+import { AGENTS, createSessionFinder, createSessionReader, sessionShortId, type AgentKind, type AgentResponse, type SessionRoots, type SessionFile } from "./sessions.js";
 import { tailJsonl, type JsonlTail } from "./tail.js";
 
 export interface SessionState {
@@ -11,6 +11,8 @@ export interface SessionState {
 	id: string;
 	agent: AgentKind;
 	path: string;
+	/** Resource root for this session, never the global index's launch directory. */
+	cwd: string;
 	shortId: string;
 	title: string | null;
 	working: boolean;
@@ -24,13 +26,17 @@ export interface SessionState {
 
 export interface MonitorOptions {
 	cwd: string;
+	allProjects?: boolean;
 	agents?: readonly AgentKind[];
-	/** Follow exactly these logs (no discovery). */
+	/** Follow exactly these log paths / OpenCode selectors (no discovery). */
 	sessionPaths?: { agent: AgentKind; path: string }[];
 	roots?: SessionRoots;
 	/** Only sessions whose log was modified within this window are followed. */
 	recentMs?: number;
+	/** Per agent per project in all-projects mode. */
 	maxPerAgent?: number;
+	/** Total followed sessions (default 64 across projects; no extra cap locally). */
+	maxSessions?: number;
 	rescanMs?: number;
 	tailIntervalMs?: number;
 	maxBackfillBytes?: number;
@@ -59,6 +65,7 @@ export interface SessionMonitor {
 const sessionId = (path: string) => createHash("sha256").update(path).digest("hex").slice(0, 16);
 /** Enough for any preview's history fill; the watch page keeps at most 20. */
 const SESSION_HISTORY = 20;
+export const ALL_PROJECTS_SESSION_LIMIT = 64;
 
 /**
  * Finished responses from the end of a log, reading further back (up to
@@ -112,7 +119,7 @@ async function firstPromptTitle(agent: AgentKind, path: string, limitBytes = 1_0
 
 export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	const cwd = options.cwd;
-	const agents = options.agents ?? AGENTS;
+	const agents = [...new Set(options.agents ?? AGENTS)];
 	const log = options.log ?? (() => {});
 	const find = createSessionFinder(options.roots);
 	const startedAt = Date.now();
@@ -131,11 +138,12 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	// Newest response time already seen in sessions that dropped out of the
 	// window, so a session that becomes active again does not replay them.
 	const seenBeforeDrop = new Map<string, number>();
+	const scanErrors = new Map<AgentKind, string>();
 
-	async function track(agent: AgentKind, path: string, mtimeMs: number) {
-		const id = sessionId(path);
+	async function track(agent: AgentKind, path: string, mtimeMs: number, sessionCwd = cwd) {
+		const id = sessionId(options.allProjects ? `${sessionCwd}\0${path}` : path);
 		if (tracked.has(id) || closed) return;
-		const state: SessionState = { id, agent, path, shortId: sessionShortId(path), title: null, working: false, lastActivity: mtimeMs, latest: null, history: [], responseCount: 0 };
+		const state: SessionState = { id, agent, path, cwd: sessionCwd, shortId: sessionShortId(path), title: null, working: false, lastActivity: mtimeMs, latest: null, history: [], responseCount: 0 };
 		const initial = !initialScanDone;
 		const read = createSessionReader(agent, path);
 		const entry = { state, tail: null as unknown as JsonlTail, initial };
@@ -151,6 +159,54 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		const notifyResponse = (response: AgentResponse, fresh: boolean) => {
 			for (const listener of responseListeners) listener(state, response, fresh);
 		};
+		if (agent === "opencode") {
+			let stopped = false, polling = false, initialized = false, lastError = "";
+			let seenTime = seenBeforeDrop.get(path) ?? -Infinity;
+			let seenOrder: string | number | undefined;
+			let lastSnapshot: unknown;
+			const poll = async () => {
+				if (stopped || closed || polling) return;
+				polling = true;
+				try {
+					if (!find.opencode) throw new Error("No OpenCode database configured.");
+					const snapshot = await find.opencode.snapshot(path);
+					if (stopped || closed || !snapshot || snapshot === lastSnapshot) return;
+					lastSnapshot = snapshot;
+					lastError = "";
+					const old = new Map(state.history.map(response => [response.key, response]));
+					const responses = snapshot.history.filter(response => old.get(response.key)?.markdown !== response.markdown);
+					const dirty = responses.length > 0 || state.history.length !== snapshot.history.length || state.title !== snapshot.title
+						|| state.working !== snapshot.working || state.lastActivity !== snapshot.lastActivity;
+					state.title = snapshot.title;
+					state.working = snapshot.working;
+					state.lastActivity = snapshot.lastActivity;
+					state.history = snapshot.history.slice();
+					state.latest = state.history.at(-1) ?? null;
+					for (const response of responses) {
+						if (closed || stopped) return;
+						if (!old.has(response.key)) state.responseCount++;
+						const order = snapshot.order.get(response.key);
+						const advanced = order !== undefined && seenOrder !== undefined && typeof order === typeof seenOrder
+							? order > seenOrder : response.time >= seenTime;
+						const fresh = initialized ? old.has(response.key) || advanced : backfillIsFresh(response);
+						notifyResponse(response, fresh);
+					}
+					const newestOrder = state.latest && snapshot.order.get(state.latest.key);
+					if (newestOrder != null && (seenOrder === undefined || typeof newestOrder !== typeof seenOrder || newestOrder > seenOrder)) seenOrder = newestOrder;
+					seenTime = Math.max(seenTime, ...state.history.map(response => response.time));
+					initialized = true;
+					if (dirty && !closed && !stopped) changed();
+				} catch (error) {
+					const message = `Could not read OpenCode history: ${error instanceof Error ? error.message : String(error)}`;
+					if (!stopped && !closed && message !== lastError) { lastError = message; log(message); }
+				} finally { polling = false; }
+			};
+			const timer = setInterval(() => void poll(), options.tailIntervalMs ?? 300);
+			timer.unref();
+			entry.tail = { ready: poll(), poll, close() { stopped = true; clearInterval(timer); } };
+			await entry.tail.ready;
+			return;
+		}
 		entry.tail = tailJsonl(path, value => {
 			for (const event of read(value)) {
 				if (event.kind === "title") { state.title = event.title; if (event.named) named.add(id); }
@@ -221,24 +277,42 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 				return;
 			}
 			const now = Date.now();
+			const candidates: SessionFile[] = [];
 			for (const agent of agents) {
-				const files = await find(agent, cwd);
-				const chosen = files.filter(file => now - file.mtimeMs <= recentMs).slice(0, maxPerAgent);
-				for (const file of chosen) await track(agent, file.path, file.mtimeMs);
-				// Stop following sessions that left the window (too old, or displaced
-				// by newer ones), so the limits hold for the whole run.
-				const keep = new Set(chosen.map(file => file.path));
-				let dropped = false;
-				for (const [id, entry] of tracked) {
-					if (entry.state.agent !== agent || keep.has(entry.state.path)) continue;
-					entry.tail.close();
-					tracked.delete(id);
-					named.delete(id);
-					seenBeforeDrop.set(entry.state.path, Math.max(seenBeforeDrop.get(entry.state.path) ?? -Infinity, ...entry.state.history.map(r => r.time)));
-					dropped = true;
+				let files;
+				try { files = options.allProjects ? await find.all(agent, { since: now - recentMs }) : await find(agent, cwd); scanErrors.delete(agent); }
+				catch (error) {
+					const message = `Could not discover ${agent} sessions: ${error instanceof Error ? error.message : String(error)}`;
+					if (scanErrors.get(agent) !== message) { scanErrors.set(agent, message); log(message); }
+					// Keep the last good selection on a transient error, within the limits.
+					files = [...tracked.values()].filter(entry => entry.state.agent === agent).map(({ state }) => ({ agent, path: state.path, cwd: state.cwd, mtimeMs: state.lastActivity }));
 				}
-				if (dropped) changed();
+				candidates.push(...files.filter(file => now - file.mtimeMs <= recentMs));
 			}
+			const counts = new Map<string, number>();
+			const chosen: SessionFile[] = [];
+			const maxSessions = options.maxSessions ?? (options.allProjects ? ALL_PROJECTS_SESSION_LIMIT : Infinity);
+			for (const file of candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+				const project = options.allProjects ? file.cwd : cwd;
+				if (!project) continue;
+				const key = JSON.stringify([file.agent, project]);
+				if ((counts.get(key) ?? 0) >= maxPerAgent) continue;
+				if (chosen.length >= maxSessions) break;
+				counts.set(key, (counts.get(key) ?? 0) + 1);
+				chosen.push({ ...file, cwd: project });
+			}
+			const keep = new Set(chosen.map(file => sessionId(options.allProjects ? `${file.cwd}\0${file.path}` : file.path)));
+			let dropped = false;
+			for (const [id, entry] of tracked) {
+				if (keep.has(id)) continue;
+				entry.tail.close(); tracked.delete(id); named.delete(id);
+				seenBeforeDrop.set(entry.state.path, Math.max(seenBeforeDrop.get(entry.state.path) ?? -Infinity, ...entry.state.history.map(r => r.time)));
+				dropped = true;
+			}
+			while (seenBeforeDrop.size > 4096) seenBeforeDrop.delete(seenBeforeDrop.keys().next().value!);
+			if (dropped) changed();
+			// Drop before adding, so even a full rotation respects the global bound.
+			for (const file of chosen) await track(file.agent, file.path, file.mtimeMs, file.cwd);
 		} catch (error) {
 			log(`Session scan failed: ${error instanceof Error ? error.message : String(error)}`);
 		} finally { scanning = false; }
@@ -258,6 +332,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 			closed = true;
 			clearInterval(timer);
 			for (const { tail } of tracked.values()) tail.close();
+			find.close();
 		},
 	};
 }

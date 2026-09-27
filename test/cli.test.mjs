@@ -28,7 +28,7 @@ test("CLI opens new addresses, restarts quietly without a viewer, and supports e
 	const start = async (args, state = "state", mode = "file") => {
 		const input = mode === "index" ? ["--cwd", root] : [file];
 		const child = spawn(process.execPath, [cli, ...input, ...args], {
-			env: { ...process.env, PATH: bin + delimiter + process.env.PATH, AGENT_MARKDOWN_PREVIEW_HOME: join(root, state), CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex") },
+			env: { ...process.env, PATH: bin + delimiter + process.env.PATH, AGENT_MARKDOWN_PREVIEW_HOME: join(root, state), CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), XDG_DATA_HOME: join(root, "xdg") },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let output = "", errors = "";

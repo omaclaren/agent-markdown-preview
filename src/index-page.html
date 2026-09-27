@@ -17,6 +17,9 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -app
 main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
 h1 { font-size: 18px; margin: 0 0 2px; }
 #cwd { color: var(--muted); font-size: 12px; margin: 0 0 18px; overflow-wrap: anywhere; }
+.project + .project { margin-top: 22px; }
+.project h2 { font-size: 16px; margin: 0 0 2px; overflow-wrap: anywhere; }
+.project-path { color: var(--muted); font-size: 12px; margin: 0 0 8px; overflow-wrap: anywhere; }
 ul { list-style: none; margin: 0; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 li + li { border-top: 1px solid var(--line); }
 li.all { border-bottom: 2px solid var(--line); }
@@ -43,8 +46,9 @@ footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
 	<h1 id="heading">Agent sessions</h1>
 	<p id="cwd"></p>
 	<ul id="list" aria-label="Sessions"></ul>
+	<div id="groups" hidden></div>
 	<div id="error" role="alert" hidden></div>
-	<footer>Each entry opens its live preview in a new tab; entries marked “open” have a preview tab that checked in recently. Sessions active in the last 3 days are listed, most recently active first.</footer>
+	<footer>Each entry opens its live preview in a new tab; entries marked “open” have a preview tab that checked in recently. <span id="scope-note">Sessions active in the last 3 days are listed, most recently active first.</span></footer>
 </main>
 <script>
 "use strict";
@@ -85,6 +89,24 @@ function row({ id, dotClass, name, shortId, title, when, whenClass }) {
 	return li;
 }
 
+function sessionRows(sessions, now) {
+	return sessions.map(s => {
+		const working = s.working && now - s.lastActivity < WORKING_STALE_MS;
+		return row({
+			id: s.id, name: s.agentLabel, shortId: s.shortId, title: s.title || s.file,
+			when: (working ? "working · " : "") + ago(now - s.lastActivity) + ` · ${s.responseCount} ${s.responseCount === 1 ? "response" : "responses"}` + (s.open ? " · open" : ""),
+			whenClass: working ? "working" : "", dotClass: working ? "working" : now - s.lastActivity < 3_600_000 ? "recent" : "",
+		});
+	});
+}
+function mergedRow(id, sessions, open, now, grouped) {
+	const merged = row({ id, name: grouped ? "Merged preview" : "All sessions (merged)",
+		title: "Latest finished response from any session in this folder, labelled by source", when: open ? "open" : "",
+		dotClass: sessions.some(s => s.working && now - s.lastActivity < WORKING_STALE_MS) ? "working" : "recent" });
+	merged.className = "all";
+	return merged;
+}
+
 async function refresh() {
 	try {
 		const response = await fetch(`/api/sessions?token=${encodeURIComponent(token)}`, { cache: "no-store" });
@@ -92,26 +114,32 @@ async function refresh() {
 		const data = await response.json();
 		document.title = "Agent sessions · " + data.label;
 		document.getElementById("heading").textContent = "Agent sessions · " + data.label;
-		document.getElementById("cwd").textContent = data.cwd;
-		const list = document.getElementById("list");
-		const rows = [];
-		const all = row({ id: "all", name: "All sessions (merged)", title: "Latest finished response from any session here, labelled by source", when: data.mergedOpen ? "open" : "", dotClass: data.sessions.some(s => s.working) ? "working" : "recent" });
-		all.className = "all";
-		rows.push(all);
-		for (const s of data.sessions) {
-			const working = s.working && data.now - s.lastActivity < WORKING_STALE_MS;
-			rows.push(row({
-				id: s.id, name: s.agentLabel, shortId: s.shortId, title: s.title || s.file,
-				when: (working ? "working · " : "") + ago(data.now - s.lastActivity) + ` · ${s.responseCount} ${s.responseCount === 1 ? "response" : "responses"}` + (s.open ? " · open" : ""),
-				whenClass: working ? "working" : "", dotClass: working ? "working" : data.now - s.lastActivity < 3_600_000 ? "recent" : "",
-			}));
+		document.getElementById("cwd").textContent = data.allProjects
+			? `${data.projects.length} project ${data.projects.length === 1 ? "folder" : "folders"} · ${data.sessions.length} ${data.sessions.length === 1 ? "session" : "sessions"}` : data.cwd;
+		const list = document.getElementById("list"), groups = document.getElementById("groups");
+		list.hidden = data.allProjects;
+		groups.hidden = !data.allProjects;
+		if (data.allProjects) {
+			const sections = data.projects.map(project => {
+				const section = document.createElement("section"); section.className = "project";
+				const heading = document.createElement("h2"); heading.id = project.id; heading.textContent = project.label;
+				section.setAttribute("aria-labelledby", heading.id);
+				const path = document.createElement("p"); path.className = "project-path"; path.textContent = project.cwd;
+				const sessions = document.createElement("ul"); sessions.setAttribute("aria-label", `Sessions in ${project.cwd}`);
+				sessions.append(mergedRow(project.id, project.sessions, project.mergedOpen, data.now, true), ...sessionRows(project.sessions, data.now));
+				section.append(heading, path, sessions); return section;
+			});
+			groups.replaceChildren(...sections);
+			document.getElementById("scope-note").textContent = `Folders are ordered by their most recent activity. Following up to ${data.sessionLimit} recent sessions in total, up to 8 per agent per folder, from the last 3 days.`;
+		} else {
+			list.replaceChildren(mergedRow("all", data.sessions, data.mergedOpen, data.now, false), ...sessionRows(data.sessions, data.now));
 		}
-		list.replaceChildren(...rows);
 		if (!data.sessions.length) {
-			const li = document.createElement("li");
-			li.id = "empty";
-			li.textContent = "No Claude Code, Codex or Pi sessions found for this directory yet. Start one here; it will appear automatically.";
-			list.append(li);
+			const empty = document.createElement(data.allProjects ? "p" : "li");
+			empty.id = "empty";
+			empty.textContent = data.allProjects ? "No recent sessions with a recorded project folder found. New sessions will appear automatically."
+				: "No recent agent sessions found for this directory yet. Start one here; it will appear automatically.";
+			(data.allProjects ? groups : list).append(empty);
 		}
 		document.getElementById("error").hidden = true;
 	} catch (error) {
