@@ -95,11 +95,13 @@ The same three-day activity window applies, with up to eight sessions per agent 
 
 This mode has its own remembered address, independent of the launch directory. The ordinary current-folder view is unchanged. `--all-projects` cannot be combined with `--cwd`, `--session`, a file argument or `--merged`; choose the merged preview within a folder instead. There is no cross-folder merged response feed in this version.
 
-### Local document links
+### Local document and image links
 
-Click a local document link to navigate in the same tab. Cmd/Ctrl-click, middle-click and the native context menu retain their normal new-tab behaviour. Browser Back restores the source revision and reading position; linked text/HTML pages also offer **Return to preview**. Following links never changes what the original watcher follows. Absolute paths (including files outside the project), relative paths, and local `file://` URLs work. Spaces and section anchors are preserved. Relative links in agent responses use the monitored project directory; links and images inside a file use that file's directory.
+Click a local document link to navigate in the same tab. Cmd/Ctrl-click, middle-click and the native context menu retain their normal new-tab behaviour. Browser Back restores the source revision and reading position; linked text, HTML and image pages also offer **Return to preview**. Following links never changes what the original watcher follows. Absolute paths (including files outside the project), relative paths, and local `file://` URLs work. Spaces and section anchors are preserved. Relative links in agent responses use the monitored project directory; links and images inside a file use that file's directory.
 
 Linked documents are **snapshots**: refresh to reread the file, or preview the file itself (`agent-markdown-preview <file>`) for continuous updates. Text/HTML input is limited to 2 MiB of UTF-8. PDF links stream to the native browser viewer, with byte-range support (browser settings may download them instead). HTML files open as actual pages with **View source / View page** controls, both when linked and when watched directly. Office and other binary document links remain unsupported. If an old linked tab expires, reopen it from its source preview. Web links and same-page section links are unchanged.
+
+Local image links such as `[Plot](plot.png)` open an image page with **Actual size / Fit image** controls. PNG, JPEG, GIF, SVG, WebP, AVIF, BMP and ICO use the browser's image decoder; no conversion is performed. SVGs stay image resources, never executable markup in the preview page. Images stream with their original filenames for saving. Embedded images (`![Plot](plot.png)`) are unchanged; image edits alone do not trigger a watcher update, so refresh to reread them.
 
 ### History and navigation
 
@@ -183,7 +185,7 @@ cp ../pi-markdown-preview/client/* src/client/ && cp ../pi-markdown-preview/shar
 npm test
 ```
 
-`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.19.0. `src/themes` holds unchanged copies of pi-studio's theme files. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
+`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.19.1. `src/themes` holds unchanged copies of pi-studio's theme files. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
 
 ## License
 

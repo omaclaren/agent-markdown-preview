@@ -91,19 +91,19 @@ test("linked file previews resolve nested links and images from the file, reread
 	const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1kAAAAASUVORK5CYII=", "base64");
 	writeFileSync(join(other, "figure.png"), png);
 	writeFileSync(join(other, "code.py"), "print('linked code')\n");
-	writeFileSync(report, "# Report\n\n## Details\n\n![Figure](figure.png)\n\n[Code](code.py)\n");
+	writeFileSync(report, "# Report\n\n## Details\n\n![Figure](figure.png)\n\n[Code](code.py)\n\n[Open figure](figure.png)\n");
 	writeFileSync(join(project, "large.md"), "x".repeat(2 * 1024 * 1024 + 1));
 	writeFileSync(join(project, "binary.txt"), Buffer.from([0, 1, 2]));
 	writeFileSync(join(project, "invalid.txt"), Buffer.from([0xff, 0xfe]));
 	writeFileSync(join(project, "safe.html"), '<script>window.bad = true;</script>\n');
 	writeFileSync(join(project, "math.tex"), "\\section{Linked math}\n$E=mc^2$\n");
 	const file = join(project, "main.md");
-	writeFileSync(file, `[Report](<${report}#details>)\n\n[Relative](<../other/report & résumé.md>)\n\n[File URL](<${pathToFileURL(report).href}>)\n\n[Large](large.md) [Binary](binary.txt) [Invalid](invalid.txt) [Missing](missing.md) [HTML](safe.html) [TeX](math.tex)`);
+	writeFileSync(file, `[Report](<${report}#details>)\n\n[Relative](<../other/report & résumé.md>)\n\n[File URL](<${pathToFileURL(report).href}>)\n\n[Large](large.md) [Binary](binary.txt) [Invalid](invalid.txt) [Missing](missing.md) [HTML](safe.html) [TeX](math.tex)\n\n[Image](../other/figure.png) [Absolute image](<${join(other, "figure.png")}>) [File image](<${pathToFileURL(join(other, "figure.png")).href}>)`);
 	const watch = await startFileWatch({ filePath: file, style: styleForMode("light"), stateDir: null });
 	t.after(async () => { await watch.close(); rmSync(root, { recursive: true, force: true }); });
 	const { html, headers } = await login(watch.url);
 	const links = routes(html).filter(href => href.startsWith(prefix)).map(href => new URL(href, watch.url));
-	assert.equal(links.length, 9);
+	assert.equal(links.length, 12);
 	assert.equal(links[0].pathname, links[1].pathname);
 	assert.equal(links[0].pathname, links[2].pathname);
 	assert.equal(links[0].hash, "#details");
@@ -116,6 +116,17 @@ test("linked file previews resolve nested links and images from the file, reread
 	assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), png);
 	const codeLink = routes(rendered).find(href => href.startsWith(prefix));
 	assert.match(await (await fetch(new URL(codeLink, watch.url), { headers })).text(), /linked code/);
+	const nestedImageLink = routes(rendered).filter(href => href.startsWith(prefix))[1];
+	assert.ok(nestedImageLink);
+	for (const url of [new URL(nestedImageLink, watch.url), ...links.slice(9)]) {
+		const imagePage = await (await fetch(url, { headers })).text();
+		assert.match(imagePage, /<title>figure.png — Agent Markdown Preview<\/title>/);
+		assert.match(imagePage, /Return to preview/);
+		const resource = imagePage.match(/<img\b[^>]*src="([^"]+)"/)[1];
+		assert.deepEqual(Buffer.from(await (await fetch(new URL(resource, watch.url), { headers })).arrayBuffer()), png);
+	}
+	assert.equal(links[9].pathname, links[10].pathname);
+	assert.equal(links[9].pathname, links[11].pathname);
 	writeFileSync(report, "# Revised report\n");
 	assert.match(await (await fetch(links[0], { headers })).text(), /Revised report/);
 	for (const [index, status] of [[3, 413], [4, 415], [5, 415], [6, 404]]) assert.equal((await fetch(links[index], { headers })).status, status);
@@ -128,9 +139,10 @@ test("linked file previews resolve nested links and images from the file, reread
 test("agent response links resolve against the monitored project", { skip, timeout: 30_000 }, async t => {
 	const root = fixture();
 	writeFileSync(join(root, "REPORT.md"), "# Agent report\n");
+	writeFileSync(join(root, "plot.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>');
 	const session = join(root, "pinned.jsonl");
 	writeFileSync(session, JSON.stringify({ type: "session", cwd: root }) + "\n" + JSON.stringify({
-		type: "message", id: "a", timestamp: new Date().toISOString(), message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "[Report](REPORT.md)" }] },
+		type: "message", id: "a", timestamp: new Date().toISOString(), message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "[Report](REPORT.md)\n\n[Image](plot.svg)" }] },
 	}) + "\n");
 	const watch = await startResponseWatch({ cwd: root, sessionPath: session, sessionAgent: "pi", style: styleForMode("dark"), stateDir: null });
 	t.after(async () => { await watch.close(); rmSync(root, { recursive: true, force: true }); });
@@ -138,6 +150,9 @@ test("agent response links resolve against the monitored project", { skip, timeo
 	const link = routes(html).find(href => href.startsWith(prefix));
 	assert.ok(link);
 	assert.match(await (await fetch(new URL(link, watch.url), { headers })).text(), /Agent report/);
+	const imageLink = routes(html).filter(href => href.startsWith(prefix))[1];
+	assert.ok(imageLink);
+	assert.match(await (await fetch(new URL(imageLink, watch.url), { headers })).text(), /<title>plot.svg — Agent Markdown Preview<\/title>/);
 });
 
 const browserPath = process.env.PUPPETEER_EXECUTABLE_PATH;
