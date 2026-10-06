@@ -18,7 +18,7 @@ const login = async url => {
 	return { html: await response.text(), headers: { cookie: response.headers.get("set-cookie").split(";")[0] } };
 };
 
-test("local document rewriting preserves fragments and ignores non-links, network and binary targets", () => {
+test("local path rewriting preserves fragments and ignores non-links and network targets", () => {
 	const seen = [];
 	const route = path => { seen.push(path); return `/doc/${seen.length}?identity=test`; };
 	const html = rewriteBrowserWatchLocalDocumentLinks([
@@ -40,9 +40,31 @@ test("local document rewriting preserves fragments and ignores non-links, networ
 	assert.equal((html.match(/rel="noopener noreferrer"/g) || []).length, 5);
 	assert.doesNotMatch(html, /target="_blank"/);
 	assert.doesNotMatch(html, /target="_self"|rel="author"| download/);
-	for (const href of ["#section", "?revision=2", "https://example.com/report.md", "//example.com/report.md", "file://remote/report.md", "data:text/plain,report.md", "javascript:alert('report.md')", "archive.zip", "../.env", "bad%00.md", "bad%XX.md"]) {
+	for (const href of ["#section", "?revision=2", "https://example.com/report.md", "//example.com/report.md", "file://remote/report.md", "data:text/plain,report.md", "javascript:alert('report.md')", "bad%00.md", "bad%XX.md"]) {
 		const input = `<a href="${href}">keep</a>`;
 		assert.equal(rewriteBrowserWatchLocalDocumentLinks(input, "/work", () => { throw new Error("unexpected route"); }), input, href);
+	}
+});
+
+test("real Pandoc file watches link archives, notebooks and folders without reading their contents", { skip }, async t => {
+	const root = fixture();
+	writeFileSync(join(root, "archive.zip"), Buffer.from([0, 255, 1]));
+	writeFileSync(join(root, "notebook.ipynb"), '{"cells":[],"private":"PRIVATE_NOTEBOOK_CONTENT"}');
+	mkdirSync(join(root, "folder"));
+	writeFileSync(join(root, "folder", "private-child.md"), "PRIVATE_FOLDER_CONTENT");
+	const file = join(root, "links.md");
+	writeFileSync(file, "# Local paths\n\n[Archive](archive.zip) [Notebook](notebook.ipynb) [Folder](folder/)\n");
+	const watch = await startFileWatch({ filePath: file, style: styleForMode("light"), stateDir: null });
+	t.after(async () => { await watch.close(); rmSync(root, { recursive: true, force: true }); });
+	const { html, headers } = await login(watch.url);
+	const links = routes(html).filter(url => url.startsWith(prefix));
+	assert.equal(links.length, 3);
+	for (const link of links) {
+		const response = await fetch(new URL(link, watch.url), { headers });
+		assert.equal(response.status, 200);
+		const page = await response.text();
+		assert.match(page, /id="pi-preview-native-actions"/);
+		assert.doesNotMatch(page, /PRIVATE_NOTEBOOK_CONTENT|PRIVATE_FOLDER_CONTENT|private-child\.md/);
 	}
 });
 
