@@ -4,6 +4,8 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 
 ## Screenshots
 
+Screenshots use synthetic sessions.
+
 **Session index for a project:**
 
 ![Session index](screenshots/index.png)
@@ -18,6 +20,7 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 
 - **Session index** — lists the recently active Claude Code, Codex, Pi and OpenCode sessions for a project with their titles, whether a turn is in progress and when each was last active. Sessions started later appear automatically. `--all-projects` groups sessions across folders in one index.
 - **Live response previews** — each session opens in its own tab and updates when the agent finishes a turn. A merged view shows the latest response from any session, labelled by source.
+- **[Working (optional)](#working-optional)** — a read-only view of recorded prompts, tool calls/results and images for a completed response. Enable with `--turn-details`.
 - **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
 - **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
 - **Rendering** — Pandoc-based Markdown and LaTeX with math, syntax highlighting, tables, Mermaid diagrams, local images and `[an: ...]` annotation markers, using the same renderer as [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview).
@@ -52,6 +55,7 @@ Run the command in the project directory where you are working with an agent:
 |---------|-------------|
 | `agent-markdown-preview` | Open the session index for the current directory |
 | `agent-markdown-preview --all-projects` | Open a cross-folder index, grouped by project |
+| `agent-markdown-preview -a --turn-details` | Browse all projects with [Working](#working-optional) enabled |
 | `agent-markdown-preview --merged` | Open one preview showing the latest response from any session here |
 | `agent-markdown-preview --session <path\|ses_id>` | Preview a single session log or OpenCode session |
 | `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
@@ -124,19 +128,36 @@ File previews start with the current version of the file and add a revision each
 
 ### Working (optional)
 
-Run `agent-markdown-preview --turn-details` (also works with `-a`, `--merged` or `--session`). **Working** beside a response opens a separate, non-live page of its recorded input messages, progress, exposed thinking/reasoning and tool calls/results. Prompts are expanded; working and tool output are folded. Known Bash, codemode, read and edit calls have readable argument views: literal commands/code, file paths and requested ranges, and Before/After replacement text. Other options stay visible and the recorded JSON is expandable. Tool results, including read output, appear in separate result cards. Wide results scroll horizontally by default; each has a Wrap lines checkbox. Extra blank lines before a prompt and complete Claude paste wrappers are hidden in the reading view; Raw input preserves the original recorded text. Unknown or malformed argument shapes keep their literal view; paths and code remain inert. Preview and Working share a view switcher and history controls. Ctrl+Alt+P/W (Control+Option on macOS) selects Preview/Working for the same response; Option/Alt+Left/Right browses history without changing views (add Shift for oldest/latest). Shortcuts leave text inputs alone. Command-based combinations are left to the host/browser; they can switch workspaces or close tabs. Scroll position, expanded cards and result wrapping survive refreshes and view changes within the tab. Working’s recorded content stays fixed while its toolbar tracks available history; new responses do not move you away from it. If Working is unavailable, a recovery page offers that exact response in Preview. Reloaded links from an earlier watcher run offer an explicit **Open current preview** action, never an automatic substitute. Browser Back, modifier clicks and new tabs work normally. This is not available for file previews.
+```bash
+agent-markdown-preview --turn-details
+```
 
-Claude response blocks with a pending stop reason are assembled with their completed message; they are not published as an answer before completion. Preview and Working use the same assembly rules. Assembly is bounded to 2 Mi characters per message; over-limit messages are omitted rather than silently truncated.
+Select **Working** beside a completed response for a read-only view of its recorded prompts, progress, exposed thinking/reasoning and tool calls/results. Some content may be missing or shortened. Prompts start expanded; activity and results start folded. Commands, file reads and requested edits have readable argument views, with the recorded JSON available. Result text can wrap, and recorded image thumbnails can be enlarged.
 
-Claude **AskUserQuestion** calls show the questions, option descriptions and single/multiple-selection setting as read-only text. Results show recorded answers and annotations when the log supplies unambiguous, call-matched answer data; otherwise the original reply is shown literally. Commas and quotes are not parsed into guessed selections. Raw output and bounded recorded answer JSON remain expandable. Option previews stay inert text, not rendered HTML or live forms. Answer data shares the existing text budget; missing or malformed data is not reconstructed.
+Use **Ctrl+Alt+P/W** (Control+Option on macOS) to switch between Preview and Working for the same response. Each view remembers its reading position; expanded cards and wrapping choices survive refreshes within the tab. Working stays on the selected turn as new responses arrive. Missing data offers a link to the same response in Preview; expired links offer an explicit way to reconnect. [History controls](#history-and-navigation) work in both views. Working is available for session previews, including `-a`, `--merged` and `--session`, but not file previews.
 
-Details are read only when requested, for that exact retained response. JSONL reads are limited to an 8 MiB tail, 1 MiB per record and 10,000 records; the view is bounded to 250 events, 16K characters of recorded text per entry and 256K overall. OpenCode uses read-only database snapshots with bounded message/part projections. The page uses one short disclaimer for potentially incomplete history; clipped entries retain a truncation marker. Missing material is not reconstructed or summarised by a model. System/developer entries, known harness-injected context, opaque signatures and prompt/non-image attachments are omitted. Text stays literal: commands, paths and URLs do not execute or become file capabilities.
+Claude question records show the questions, options and recorded answers as read-only text.
 
-Tool results can include **recorded image thumbnails**, with click/Enter to enlarge and Escape/Close to return. Only inline recorded bytes are used—never a current file, external URL or attachment ID. Static PNG, JPEG and WebP are supported; missing, unsupported and oversized images get a short unavailable message. Images appear below the result's text and decode when its card is expanded. Bounds are eight image candidates per turn, 512 KiB and 8 Mi pixels per image, 2 MiB and 16 Mi pixels overall, and 8192 pixels per dimension. Existing record/read limits still apply: an oversized source record can be absent altogether. OpenCode records are read one at a time, up to 1 MiB each and 8 MiB total. No conversion, persistent image storage or new file-serving endpoint is added.
+**Privacy:** prompts, tool arguments, output and recorded images may contain secrets; they are not automatically redacted. Share these links only with trusted viewers. Working uses separate remembered credentials, so previously shared ordinary-preview links do not gain this access. Stop the opted-in process to revoke access; starting an ordinary preview does not stop it.
 
 ![Working with a recorded image — synthetic example](screenshots/recorded-images-working-dark.png)
 
-**Privacy:** this exposes substantially more than the final answer and does not automatically redact secrets in prompts, tool arguments, output or recorded images. Only enable it for trusted viewers. Ordinary and turn-details previews use separate remembered credentials, so previously shared ordinary-preview links do not gain this access. Stop the opted-in process to revoke it; running an ordinary preview does not stop a separate opted-in process.
+<details>
+<summary>Recorded content and limits</summary>
+
+Details are read only when requested, for the exact retained response. Reads are limited to an 8 MiB JSONL tail, 1 MiB per record and 10,000 records. Display limits are 250 events, 16K characters of recorded text per entry and 256K overall. Clipped entries are marked; missing material is not reconstructed. System/developer entries, known harness-injected context, opaque signatures and prompt/non-image attachments are omitted.
+
+Commands, paths and URLs stay literal and do not execute or become file capabilities. Known Bash, codemode, read and edit calls show commands/code, requested paths/ranges and Before/After replacement text. Other options and unknown or malformed argument shapes retain their literal view. Calls and results remain separate. Raw input preserves the prompt's original text when the reading view removes leading blank lines.
+
+Images use only recorded inline bytes, never current files, URLs or attachment IDs. Static PNG, JPEG and WebP are supported; missing, unsupported or oversized images get an unavailable message. Thumbnails decode when their result card opens. Limits are eight candidates per turn, 512 KiB and 8 Mi pixels per image, 2 MiB and 16 Mi pixels overall, and 8192 pixels per dimension. Record/read limits still apply, so an oversized source record may be absent altogether. There is no conversion or persistent image storage.
+
+Complete Claude paste wrappers are hidden in the reading view and preserved in Raw input. Claude response blocks with a pending stop reason are assembled with their completed message, using the same rules in Preview and Working. Assembly is bounded to 2 Mi characters per message; over-limit messages are omitted rather than silently truncated.
+
+Claude `AskUserQuestion` records include option descriptions and single/multiple-selection settings. Answers and annotations are shown when the log supplies unambiguous, call-matched data; otherwise the original reply is shown literally. Commas and quotes are not parsed into selections. Raw output and bounded answer JSON remain expandable. Option previews are inert text. Answer data shares the text budget; missing or malformed data is not reconstructed.
+
+OpenCode uses read-only database snapshots, reading message/part records one at a time, up to 1 MiB each and 8 MiB total.
+
+</details>
 
 ### Restarts
 
@@ -151,7 +172,7 @@ Addresses are remembered in `~/.agent-markdown-preview/servers.json`; set `AGENT
 Palette and appearance are separate choices. The default is **agent palettes + system appearance**:
 
 ```bash
-agent-markdown-preview -a --turn-details
+agent-markdown-preview -a
 agent-markdown-preview -a --agent-theme pi=pi-studio
 agent-markdown-preview --theme neutral --appearance dark
 agent-markdown-preview --theme claude --appearance light
