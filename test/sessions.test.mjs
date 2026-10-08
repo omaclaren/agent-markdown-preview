@@ -3,7 +3,9 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { claudeProjectDirName, createResponseReader, createSessionFinder, detectAgent, piSessionDirName } from "../dist/sessions.js";
+import { claudeProjectDirName, createResponseReader, createSessionReader, createSessionFinder, detectAgent, piSessionDirName } from "../dist/sessions.js";
+import { turnDetailsFromRecords } from "../dist/shared/turn-details.js";
+import { CLAUDE_RESPONSE_TEXT_LIMIT } from "../dist/shared/claude-response.js";
 
 const read = (agent, entries) => {
 	const reader = createResponseReader(agent, "/s.jsonl");
@@ -24,6 +26,48 @@ test("Claude Code: final message only, blocks of one message accumulate, sidecha
 	]);
 	assert.deepEqual(responses.map(r => [r.key, r.markdown]), [["claude:m2", "Part one"], ["claude:m2", "Part one\n\nPart two"]]);
 	assert.equal(responses[0].time, Date.parse(at));
+});
+
+test("Claude partial blocks wait for completion and match Working exactly, including empty completion markers", () => {
+ const c=(uuid,parentUuid,id,stop_reason,content,extra={})=>({type:'assistant',uuid,parentUuid,message:{id,stop_reason,content},...extra});
+ const text=value=>({type:'text',text:value});
+ for(const finalContent of [[text('Last block')],[]]){
+  const rows=[{type:'user',uuid:'u',parentUuid:null,message:{role:'user',content:'Correct input'}},
+   c('a1','u','answer',null,[text('First block'),text(' \r\n '),text('  Indented\r\nline')]),
+   c('side','a1','other','end_turn',[text('SIDECHAIN')],{isSidechain:true}),
+   c('a2','a1','answer',undefined,[{type:'thinking',thinking:'Recorded thinking'}]),
+   c('a3','a2','answer','end_turn',finalContent)];
+  for(const row of rows) if(row.type==='assistant')row.message.role='assistant';
+  const reader=createResponseReader('claude','/synthetic.jsonl');
+  for(const row of rows.slice(0,-1)) assert.equal(reader(row),null,'Partial records must not become finished previews');
+  const response=reader(rows.at(-1));assert.equal(response.markdown,'First block\n\n  Indented\r\nline'+(finalContent.length?'\n\nLast block':''));
+  const trace=turnDetailsFromRecords('claude',rows,response);assert.equal(trace.events[0].text,'Correct input');
+  assert.ok(trace.events.some(e=>e.kind==='reasoning'));assert.doesNotMatch(JSON.stringify(trace),/SIDECHAIN|answer has changed/);
+  assert.equal(turnDetailsFromRecords('claude',rows,{...response,markdown:'Different snapshot'}).events.length,0);
+ }
+});
+
+test("Claude pending assembly stays bounded and cannot reuse tool/error or another message's text",()=>{
+ const c=(id,stop_reason,text)=>({type:'assistant',message:{role:'assistant',id,stop_reason,content:[{type:'text',text}]}});
+ const reader=createResponseReader('claude','/synthetic.jsonl');
+ assert.equal(reader(c('too-big',null,'x'.repeat(CLAUDE_RESPONSE_TEXT_LIMIT))),null);
+ assert.equal(reader(c('too-big','end_turn','extra')),null,'Do not publish a silently truncated answer');
+ const activity=createSessionReader('claude','/synthetic.jsonl');activity(c('too-big',null,'x'.repeat(CLAUDE_RESPONSE_TEXT_LIMIT)));
+ assert.deepEqual(activity(c('too-big','end_turn','extra')).map(e=>[e.kind,e.working]),[['working',false]],'An omitted final answer still ends the activity indicator');
+ for(const reason of ['tool_use','error','aborted']){
+  const r=createResponseReader('claude','/synthetic.jsonl');
+  assert.equal(r(c('tool',null,'Tool progress')),null);assert.equal(r(c('tool',reason,'')),null);
+  assert.equal(r(c('tool','end_turn','Reused ID')),null);
+  assert.equal(r(c('new','end_turn','New answer')).markdown,'New answer');
+ }
+ assert.equal(reader(c('abandoned',null,'Not part of next message')),null);
+ assert.equal(reader(c('new','end_turn','Answer')).markdown,'Answer');
+ for(const boundary of [{type:'user',message:{content:'New input'}},{type:'system',subtype:'compact_boundary'},{type:'compaction'},{...c('x','end_turn','API error'),isApiErrorMessage:true}]){
+  const r=createResponseReader('claude','/synthetic.jsonl');r(c('reused',null,'Old attempt'));assert.equal(r(boundary),null);
+  assert.equal(r(c('reused','end_turn','Fresh answer')).markdown,'Fresh answer','Do not cross a recorded input/compaction/failure boundary');
+ }
+ const first=c('grow','end_turn','Old answer'),oversized=c('grow','end_turn','x'.repeat(CLAUDE_RESPONSE_TEXT_LIMIT));
+ assert.equal(turnDetailsFromRecords('claude',[first,oversized],{key:'claude:grow',markdown:'Old answer'}).events.length,0,'A later oversized revision must not match an earlier snapshot');
 });
 
 test("Codex: task_complete carries the final message", () => {

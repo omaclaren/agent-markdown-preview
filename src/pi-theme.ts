@@ -5,8 +5,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getPreviewStyle, type PreviewStyle, type PreviewTheme } from "./render.js";
 
-/** Themes bundled with this package (copied from pi-studio). */
+/** Bundled Pi stock (resolved from Pi 1.0.4) and Pi Studio theme snapshots. */
 export const BUNDLED_THEMES: Record<string, string> = {
+	"pi-light": fileURLToPath(new URL("./themes/pi-light.json", import.meta.url)),
+	"pi-dark": fileURLToPath(new URL("./themes/pi-dark.json", import.meta.url)),
 	"pi-studio-light": fileURLToPath(new URL("./themes/pi-studio-light.json", import.meta.url)),
 	"pi-studio-dark": fileURLToPath(new URL("./themes/pi-studio-dark.json", import.meta.url)),
 };

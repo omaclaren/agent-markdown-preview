@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import { extractAssistantMarkdownContent } from "./render.js";
 import { createOpenCodeStore, openCodeSessionId, readOpenCodeResponse } from "./opencode.js";
+import { createClaudeResponseAssembler, isClaudeFinal } from "./shared/claude-response.js";
 
 export type AgentKind = "claude" | "codex" | "pi" | "opencode";
 export const AGENTS: readonly AgentKind[] = ["claude", "codex", "pi", "opencode"];
@@ -88,6 +89,7 @@ export function createSessionReader(agent: AgentKind, sessionPath: string): (ent
 		if (!e) return events;
 		const time = entryTime(e.timestamp, Date.now());
 		if (agent === "claude") {
+			if (!response && e.isSidechain !== true && isClaudeFinal(e)) events.push({ kind: "working", working: false, time });
 			if (e.type === "ai-title" && typeof e.aiTitle === "string") events.push(...title(e.aiTitle, true));
 			if (e.type === "system" && e.subtype === "turn_duration") events.push({ kind: "working", working: false, time });
 			if (e.type === "user" && e.isSidechain !== true) {
@@ -146,22 +148,10 @@ export function sessionShortId(path: string): string {
 export function createResponseReader(agent: AgentKind, sessionPath: string): (entry: unknown) => AgentResponse | null {
 	if (agent === "opencode") return entry => readOpenCodeResponse(entry, sessionPath);
 	if (agent === "claude") {
-		// Claude Code writes one line per content block. The turn's final message is
-		// the assistant message whose stop_reason ends the turn (not "tool_use").
-		let currentId: string | null = null;
-		let parts: string[] = [];
+		const assemble = createClaudeResponseAssembler();
 		return entry => {
-			const e = record(entry);
-			const message = record(e?.message);
-			if (e?.type !== "assistant" || e.isSidechain === true || !message || !Array.isArray(message.content)) return null;
-			if (!["end_turn", "stop_sequence", "max_tokens"].includes(message.stop_reason)) return null;
-			const id = typeof message.id === "string" ? message.id : typeof e.uuid === "string" ? e.uuid : null;
-			if (!id) return null;
-			if (id !== currentId) { currentId = id; parts = []; }
-			const text = extractAssistantMarkdownContent(message.content);
-			if (!text) return null;
-			parts.push(text);
-			return { agent, key: `claude:${id}`, markdown: parts.join("\n\n"), time: entryTime(e.timestamp, Date.now()), sessionPath };
+			const response = assemble(entry);
+			return response ? { agent, ...response, time: entryTime(record(entry)?.timestamp, Date.now()), sessionPath } : null;
 		};
 	}
 	if (agent === "codex") {

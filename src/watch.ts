@@ -14,15 +14,26 @@ import {
 	normalizePreviewFontSizePx, prepareFilePreview, renderPreviewHtmlDocument, type PreviewStyle,
 } from "./render.js";
 import { styleForMode, themeFinisher } from "./theme.js";
+import type { PageTheme } from "./appearance.js";
 import { AGENT_LABELS, AGENTS, defaultSessionRoots, detectAgent, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { isHtmlPagePath } from "./shared/html-page-preview.js";
 import { readLinkedDocument } from "./shared/read-linked-document.js";
+import { readTurnDetails } from "./shared/read-turn-details.js";
+import { AGENT_PAGE_STYLE, applyPreviewAppearance } from "./shared/agent-page-style.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
 
 const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run agent-markdown-preview again for a fresh link." };
 /** Remembered addresses make restarted previews reconnect; `null` disables. */
-const slotStore = (stateDir: string | null | undefined): SlotStore | null => stateDir === null ? null : createSlotStore(stateDir ?? defaultStateDir());
+const slotStore = (stateDir: string | null | undefined, turnDetails = false): SlotStore | null => {
+	if (stateDir === null) return null;
+	const store = createSlotStore(stateDir ?? defaultStateDir());
+	if (!turnDetails) return store;
+	// Previously shared ordinary-preview links must not gain trace access.
+	const scope = "turn-details|";
+	return { get: key => store.get(scope + key), set: (key, slot) => store.set(scope + key, slot),
+		recent: (prefix, ms) => store.recent(scope + prefix, ms).map(key => key.slice(scope.length)) };
+};
 
 export { styleForMode };
 
@@ -61,6 +72,7 @@ interface ResponseView {
 
 interface ViewOptions {
 	cwd: string;
+	turnDetails?: boolean;
 	style: PreviewStyle;
 	fontSizePx: number;
 	label: string;
@@ -75,6 +87,7 @@ interface ViewOptions {
 	slotKey: string;
 	/** Final touch to every page (light/dark following). */
 	finish: (html: string) => string;
+	agentThemes?: Record<AgentKind, RenderTheme>;
 }
 
 /** One watch page following a stream of responses. Same key = revise in place. */
@@ -84,7 +97,23 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		// The render pipeline does not pass raw HTML through, so the caption is Markdown.
 		return caption ? `*${caption.replace(/[\\`*_[\]<>#|~$]/g, "\\$&")}*\n\n${response.markdown}` : response.markdown;
 	};
-	const render = async (response: AgentResponse) => options.finish((await renderPreviewHtmlDocument(markdownFor(response), options.style, options.cwd, false, options.fontSizePx)).html);
+	const detailsFor = (response?: AgentResponse) => options.turnDetails && response ? async (signal: AbortSignal) => {
+		if (response.agent !== "opencode") return readTurnDetails(response.sessionPath, response.agent, response, signal);
+		const store = createOpenCodeStore(response.sessionPath.slice(0, response.sessionPath.lastIndexOf("#")));
+		try { return await store.turnDetails(response, signal); } finally { store.close(); }
+	} : undefined;
+	const responseTheme = (response: AgentResponse) => options.agentThemes?.[response.agent] ?? options;
+	const render = async (response: AgentResponse) => {
+		const { style, finish } = responseTheme(response);
+		return finish((await renderPreviewHtmlDocument(markdownFor(response), style, options.cwd, false, options.fontSizePx)).html);
+	};
+	// Keep linked documents tied to their source revision in mixed-agent history.
+	// Stores theme objects only, not response text. More than the server's retained history.
+	const revisionThemes = new Map<number, RenderTheme>();
+	const rememberTheme = (revision: number, response: AgentResponse) => {
+		revisionThemes.set(revision, responseTheme(response));
+		while (revisionThemes.size > 128) revisionThemes.delete(revisionThemes.keys().next().value!);
+	};
 	// Fill the page history from the logs (up to 4 pandoc runs at once), in order.
 	const rendered: ({ response: AgentResponse; html: string } | null)[] = new Array(options.history.length).fill(null);
 	let next = 0;
@@ -101,9 +130,14 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		?? options.finish(buildBrowserHtmlFromPandocFragment(`<p>${escapeHtml(options.waitingText)}</p>`, options.style, options.cwd, [], options.fontSizePx));
 	const { started: server, reused } = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
 		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
-		renderLocalDocument: localDocumentRenderer(options.style, options.fontSizePx, options.finish),
+		initialTurnDetails: detailsFor(seeded[0]?.response),
+		renderLocalDocument: (path, signal, revision) => {
+			const { style, finish } = revisionThemes.get(revision ?? 1) ?? options;
+			return localDocumentRenderer(style, options.fontSizePx, finish)(path, signal);
+		},
 	}));
-	for (const { html } of seeded.slice(1)) server.updateDocument(html, { appendToHistory: true });
+	if (seeded[0]) rememberTheme(1, seeded[0].response);
+	for (const { html, response } of seeded.slice(1)) rememberTheme(server.updateDocument(html, { appendToHistory: true, turnDetails: detailsFor(response) }), response);
 	const shown = seeded.at(-1)?.response;
 	let shownKey = shown?.key ?? null, shownMarkdown = shown?.markdown ?? "", closed = false;
 	let queue = Promise.resolve();
@@ -123,7 +157,8 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 					const html = await render(response);
 					if (closed) return;
 					// Not inside the optional call: `f?.(g())` skips g() when f is absent.
-					const revision = server.updateDocument(html, { appendToHistory });
+					const revision = server.updateDocument(html, { appendToHistory, turnDetails: detailsFor(response) });
+					rememberTheme(revision, response);
 					options.onRendered?.(response, revision);
 				} catch (error) {
 					options.log(`Could not render a ${AGENT_LABELS[response.agent]} response: ${errorMessage(error)}`);
@@ -140,6 +175,8 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 
 interface CommonOptions {
 	cwd: string;
+	/** Opt-in: expose recorded prompts/tool activity for retained responses. */
+	turnDetails?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
 	allProjects?: boolean;
@@ -159,12 +196,16 @@ interface CommonOptions {
 	followSystemTheme?: boolean;
 	/** Dark counterpart of `style` when following the system (default: the built-in dark palette). */
 	darkStyle?: PreviewStyle;
+	/** Optional source-specific palettes; the overview and waiting pages use `style`. */
+	agentThemes?: Record<AgentKind, PageTheme>;
 }
 
+interface RenderTheme { style: PreviewStyle; finish: (html: string) => string }
 /** Style and page finisher for a set of options. */
-const themeFor = (options: { style: PreviewStyle; followSystemTheme?: boolean; darkStyle?: PreviewStyle; log?: (message: string) => void }, fontSizePx: number) => ({
+const themeFor = (options: { style: PreviewStyle; followSystemTheme?: boolean; darkStyle?: PreviewStyle; agentThemes?: Record<AgentKind, PageTheme>; log?: (message: string) => void }, fontSizePx: number): RenderTheme & { agentThemes?: Record<AgentKind, RenderTheme> } => ({
 	style: options.style,
 	finish: themeFinisher(options.followSystemTheme === true, fontSizePx, options.log ?? (() => {}), options.style, options.darkStyle ?? styleForMode("dark")),
+	agentThemes: options.agentThemes && Object.fromEntries(AGENTS.map(agent => [agent, themeFor({ ...options.agentThemes![agent], log: options.log }, fontSizePx)])) as Record<AgentKind, RenderTheme> | undefined,
 });
 
 const fillCount = (options: CommonOptions) => Math.max(1, Math.min(20, Math.floor(options.historyFill ?? 10)));
@@ -213,7 +254,7 @@ function captionFor(monitor: SessionMonitor) {
 /** Creates the merged view over all monitored sessions (or one pinned session). */
 async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string) {
 	return createResponseView({
-		slots: slotStore(options.stateDir), slotKey, ...themeFor(options, base.fontSizePx),
+		slots: slotStore(options.stateDir, options.turnDetails), slotKey, turnDetails: options.turnDetails, ...themeFor(options, base.fontSizePx),
 		cwd: base.cwd, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions().filter(s => s.cwd === base.cwd), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captionFor(monitor),
@@ -243,7 +284,7 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 	return { url: started.url, label, reused: started.reused, waitForViewer: ms => pollFor(() => started.clientCount > 0, ms), async close() { base.monitor.close(); await started.close(); } };
 }
 
-const INDEX_PAGE = readFileSync(new URL("./index-page.html", import.meta.url), "utf8");
+const INDEX_PAGE = readFileSync(new URL("./index-page.html", import.meta.url), "utf8").replace("/*__AGENT_PAGE_STYLE__*/", () => AGENT_PAGE_STYLE);
 
 /**
  * An index for cwd, or grouped across projects. Session and folder-merged
@@ -252,8 +293,10 @@ const INDEX_PAGE = readFileSync(new URL("./index-page.html", import.meta.url), "
 export async function startSessionIndex(options: CommonOptions): Promise<RunningWatch> {
 	const base = await openMonitor(options);
 	const { cwd, monitor } = base;
+	const overviewTheme = themeFor(options, 14);
+	const indexPage = applyPreviewAppearance(INDEX_PAGE, overviewTheme.finish(buildBrowserHtmlFromPandocFragment("", overviewTheme.style, undefined, [], 14)));
 	const log = options.log ?? (() => {});
-	const slots = slotStore(options.stateDir);
+	const slots = slotStore(options.stateDir, options.turnDetails);
 	let token = "", lastPollAt = 0, closed = false;
 	const views = new Map<string, Promise<ResponseView>>();
 	const started = new Map<string, ResponseView>();
@@ -284,7 +327,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (!session && !project && !(id === "all" && !allProjects)) return null;
 		const resourceCwd = session?.cwd ?? project?.cwd ?? cwd;
 		const created = session
-			? createResponseView({ cwd: resourceCwd, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: sessionKey(session) })
@@ -311,7 +354,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 			const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 			if (!tokenMatches(url.searchParams.get("token"))) return send(403, "Invalid or expired link. Use the URL printed by agent-markdown-preview.");
 			if (url.pathname === "/") {
-				return send(200, INDEX_PAGE, "text/html; charset=utf-8", {
+				return send(200, indexPage, "text/html; charset=utf-8", {
 					"Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
 				});
 			}
@@ -325,11 +368,15 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 				return send(200, JSON.stringify({ cwd: allProjects ? null : cwd, label, allProjects, now: Date.now(), sessions: monitor.sessions().map(info),
 					projects: groups, sessionLimit: allProjects ? ALL_PROJECTS_SESSION_LIMIT : undefined, mergedOpen: hasOpenTab("all") }), "application/json");
 			}
-			const open = url.pathname.match(/^\/open\/(all|project-[0-9a-f]{16}|[0-9a-f]{16})$/);
+			const open = url.pathname.match(/^\/(open|api\/preview-link)\/(all|project-[0-9a-f]{16}|[0-9a-f]{16})$/);
 			if (open) {
-				const pending = view(open[1]!);
+				const copyLink = open[1] === "api/preview-link";
+				if (copyLink && req.method !== "GET") return send(405, "Method not allowed", "text/plain; charset=utf-8", { Allow: "GET" });
+				const pending = view(open[2]!);
 				if (!pending) return send(404, "That session is no longer followed. Reload the index.");
 				const target = await pending;
+				// Share only this preview's credentials, never the overview token.
+				if (copyLink) return send(200, JSON.stringify({ url: target.url }), "application/json");
 				return send(302, "", "text/plain; charset=utf-8", { Location: target.url });
 			}
 			return send(404, "Not found");

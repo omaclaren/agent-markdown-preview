@@ -21,7 +21,7 @@ Preview coding-agent responses and local Markdown, LaTeX, code and diff files in
 - **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
 - **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
 - **Rendering** — Pandoc-based Markdown and LaTeX with math, syntax highlighting, tables, Mermaid diagrams, local images and `[an: ...]` annotation markers, using the same renderer as [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview).
-- **Themes** — pages follow the system light/dark setting as it changes, using the default palettes or the [pi-studio](https://github.com/omaclaren/pi-studio) light and dark themes. Fixed themes and Pi theme files also work.
+- **Themes** — choose a neutral, agent-specific or Pi palette independently of System/Light/Dark appearance. The overview, responses and Working honour the same appearance choice; mixed-agent previews can select a palette per response.
 - **Restarts** — previews keep their local addresses, so open tabs reconnect when the command restarts.
 
 ## Requirements
@@ -63,7 +63,10 @@ Run the command in the project directory where you are working with an agent:
 | `-a`, `--all-projects` | Discover recent sessions across folders instead of just the current directory |
 | `--opencode-db <path>` | OpenCode SQLite file instead of the default XDG data location |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
-| `--theme <name\|file>` | `auto` (default) or `pi-studio` follows the system light/dark setting; `light`, `dark`, `pi-studio-light`, `pi-studio-dark` or a Pi theme `.json` file fixes the theme |
+| `--turn-details` | Opt in to a read-only view of recorded inputs, working, tool output and recorded images (may contain sensitive content) |
+| `--theme <name\|file>` | `agent` (default, by source), `auto` (legacy palette), `neutral`, `claude`, `codex`, `opencode`, `pi`, `pi-studio`, a `-light`/`-dark` variant, or a Pi theme `.json` file |
+| `--agent-theme <agent=theme>` | Override one agent, e.g. `pi=pi-studio`; repeatable, last value per agent wins; requires agent theme mode |
+| `--appearance <mode>` | `system` (default for pairs), `light` or `dark`; overrides a theme's appearance |
 | `--font-size <px>` | Base font size |
 | `--open` | Open a browser tab even when restarting at a remembered address |
 | `--no-open` | Never open a browser tab; still print the URL |
@@ -91,7 +94,7 @@ agent-markdown-preview -a --agent claude,opencode
 
 Folders are grouped by their recorded full path, with the most recently active group first. The folder name is prominent and its full path appears underneath, so two folders named `app` remain distinct. Each group has individual session previews and a **Merged preview** for that folder only. Relative images and document links use the session's own project directory, not the directory where you launched the index.
 
-The same three-day activity window applies, with up to eight sessions per agent per folder and **64 followed sessions total**, newest first. Discovery reads the agents' existing storage locations, not a recursive scan of your projects. It inspects at most 512 recent candidate logs per agent per scan; Codex retains its 45-date-folder discovery window. Logs without a recognised absolute working directory are omitted rather than guessing from encoded filenames. New sessions and folders appear automatically. Rendering starts when you open a preview.
+The same three-day activity window applies, with up to eight sessions per agent per folder and **64 followed sessions total**, newest first. Discovery reads the agents' existing storage locations, not a recursive scan of your projects. It inspects at most 512 recent candidate logs per agent per scan; Codex retains its 45-date-folder discovery window. Logs without a recognised absolute working directory are omitted rather than guessing from encoded filenames. New sessions and folders appear automatically. Rendering starts when you open a preview or request its link. **Copy preview link** beside each session or folder-merged row copies that preview’s private address, without opening a tab. It does not share the overview’s wider credentials. Clipboard failures offer a selectable link; native right-click Copy link still copies the overview routing URL. Keep links private, particularly when prompt and working access is enabled.
 
 This mode has its own remembered address, independent of the launch directory. The ordinary current-folder view is unchanged. `--all-projects` cannot be combined with `--cwd`, `--session`, a file argument or `--merged`; choose the merged preview within a folder instead. There is no cross-folder merged response feed in this version.
 
@@ -101,7 +104,7 @@ Click a local document link to navigate in the same tab. Cmd/Ctrl-click, middle-
 
 Linked documents are **snapshots**: refresh to reread the file, or preview the file itself (`agent-markdown-preview <file>`) for continuous updates. Text/HTML input is limited to 2 MiB of UTF-8. PDF links stream to the native browser viewer, with byte-range support (browser settings may download them instead). HTML files open as actual pages with **View source / View page** controls, both when linked and when watched directly. Office and other non-previewable files open a path/action page instead. If an old linked tab expires, reopen it from its source preview. Web links and same-page section links are unchanged.
 
-Explicit local links have a **Copy local path** icon and a **⋯ File actions** link beside them (shown on hover/keyboard focus, always visible on touch). Linked text, image and HTML previews also offer **Copy local path** and **File actions** beside **Return to preview**. Copying gives the resolved absolute path on the preview host, without a URL fragment or shell quoting; authored symlink paths are preserved. If the clipboard is blocked, a selectable path is shown. Native right-click menus and **Copy link** still use the browser URL. Native PDFs remain unchanged; use the controls beside their source link for file actions.
+Explicit local links have a **Copy local path** icon and a **⋯ File actions** link beside them (compact and muted normally, highlighted on hover/keyboard focus, with larger touch targets). Linked text, image and HTML previews also offer **Copy local path** and **File actions** beside **Return to preview**. Copying gives the resolved absolute path on the preview host, without a URL fragment or shell quoting; authored symlink paths are preserved. If the clipboard is blocked, a selectable path is shown. Native right-click menus and **Copy link** still use the browser URL. Native PDFs remain unchanged; use the controls beside their source link for file actions. Linked File actions, image pages and the outer HTML-file viewer inherit their source response’s palette; authored HTML inside the isolated viewer is not restyled. Working inherits its response’s palette and text size; inline controls follow their document’s theme.
 
 ZIPs, notebooks (`.ipynb`), other non-previewable files and folders open a **path page**. Files offer **Show in folder**, **Open in default app** and **Copy local path**; folders offer **Open folder** and **Copy local path**. Supported files' action pages also link back to their **Preview**. Unsupported file contents are not read/downloaded, notebooks are not executed by the preview, and folders are not listed. Use an explicit Markdown link such as `[Results](results/)`; bare paths in backticks remain text.
 
@@ -113,9 +116,27 @@ Local image links such as `[Plot](plot.png)` open an image page with **Actual si
 
 Each preview starts with the last 10 finished responses from the session log, with the newest shown. The merged view takes the last 10 across all sessions, in time order. `--history` changes this count, and a page keeps up to 20 revisions as new responses arrive.
 
-Use **Previous**, **Next** and **Latest** in the **Preview** panel, or **Option/Alt+Left** and **Option/Alt+Right**; adding **Shift** jumps to the oldest or latest revision. While you are viewing the latest revision the page follows new responses. On an older revision it stays put and marks **Latest (new)** when something arrives.
+The compact toolbar has **Preview / Working** when enabled, followed by a **current/total ▾** counter and an always-visible **Copy link** button. Open the counter for history navigation and wrapping. Copy feedback stays on the toolbar; a manual-copy dialog returns keyboard focus to Copy link when dismissed.
+
+Use **Previous**, **Next** and **Latest** in the counter menu, or **Option/Alt+Left** and **Option/Alt+Right**; adding **Shift** jumps to the oldest or latest revision. While you are viewing the latest revision the page follows new responses. On an older revision it stays put and marks **Latest (new)** when something arrives.
 
 File previews start with the current version of the file and add a revision each time it changes. They keep your reading position across updates.
+
+### Working (optional)
+
+Run `agent-markdown-preview --turn-details` (also works with `-a`, `--merged` or `--session`). **Working** beside a response opens a separate, non-live page of its recorded input messages, progress, exposed thinking/reasoning and tool calls/results. Prompts are expanded; working and tool output are folded. Known Bash, codemode, read and edit calls have readable argument views: literal commands/code, file paths and requested ranges, and Before/After replacement text. Other options stay visible and the recorded JSON is expandable. Tool results, including read output, appear in separate result cards. Wide results scroll horizontally by default; each has a Wrap lines checkbox. Extra blank lines before a prompt and complete Claude paste wrappers are hidden in the reading view; Raw input preserves the original recorded text. Unknown or malformed argument shapes keep their literal view; paths and code remain inert. Preview and Working share a view switcher and history controls. Ctrl+Alt+P/W (Control+Option on macOS) selects Preview/Working for the same response; Option/Alt+Left/Right browses history without changing views (add Shift for oldest/latest). Shortcuts leave text inputs alone. Command-based combinations are left to the host/browser; they can switch workspaces or close tabs. Scroll position, expanded cards and result wrapping survive refreshes and view changes within the tab. Working’s recorded content stays fixed while its toolbar tracks available history; new responses do not move you away from it. If Working is unavailable, a recovery page offers that exact response in Preview. Reloaded links from an earlier watcher run offer an explicit **Open current preview** action, never an automatic substitute. Browser Back, modifier clicks and new tabs work normally. This is not available for file previews.
+
+Claude response blocks with a pending stop reason are assembled with their completed message; they are not published as an answer before completion. Preview and Working use the same assembly rules. Assembly is bounded to 2 Mi characters per message; over-limit messages are omitted rather than silently truncated.
+
+Claude **AskUserQuestion** calls show the questions, option descriptions and single/multiple-selection setting as read-only text. Results show recorded answers and annotations when the log supplies unambiguous, call-matched answer data; otherwise the original reply is shown literally. Commas and quotes are not parsed into guessed selections. Raw output and bounded recorded answer JSON remain expandable. Option previews stay inert text, not rendered HTML or live forms. Answer data shares the existing text budget; missing or malformed data is not reconstructed.
+
+Details are read only when requested, for that exact retained response. JSONL reads are limited to an 8 MiB tail, 1 MiB per record and 10,000 records; the view is bounded to 250 events, 16K characters of recorded text per entry and 256K overall. OpenCode uses read-only database snapshots with bounded message/part projections. The page uses one short disclaimer for potentially incomplete history; clipped entries retain a truncation marker. Missing material is not reconstructed or summarised by a model. System/developer entries, known harness-injected context, opaque signatures and prompt/non-image attachments are omitted. Text stays literal: commands, paths and URLs do not execute or become file capabilities.
+
+Tool results can include **recorded image thumbnails**, with click/Enter to enlarge and Escape/Close to return. Only inline recorded bytes are used—never a current file, external URL or attachment ID. Static PNG, JPEG and WebP are supported; missing, unsupported and oversized images get a short unavailable message. Images appear below the result's text and decode when its card is expanded. Bounds are eight image candidates per turn, 512 KiB and 8 Mi pixels per image, 2 MiB and 16 Mi pixels overall, and 8192 pixels per dimension. Existing record/read limits still apply: an oversized source record can be absent altogether. OpenCode records are read one at a time, up to 1 MiB each and 8 MiB total. No conversion, persistent image storage or new file-serving endpoint is added.
+
+![Working with a recorded image — synthetic example](screenshots/recorded-images-working-dark.png)
+
+**Privacy:** this exposes substantially more than the final answer and does not automatically redact secrets in prompts, tool arguments, output or recorded images. Only enable it for trusted viewers. Ordinary and turn-details previews use separate remembered credentials, so previously shared ordinary-preview links do not gain this access. Stop the opted-in process to revoke it; running an ordinary preview does not stop a separate opted-in process.
 
 ### Restarts
 
@@ -127,9 +148,29 @@ Addresses are remembered in `~/.agent-markdown-preview/servers.json`; set `AGENT
 
 ### Themes
 
-With `--theme auto` (the default), pages follow the browser's light/dark setting, which normally follows the operating system, and switch as soon as it changes. They use pi-markdown-preview's default light and dark palettes. `--theme pi-studio` does the same with the light and dark themes from pi-studio. Pages with Mermaid diagrams reload so the diagrams are redrawn in the new colours.
+Palette and appearance are separate choices. The default is **agent palettes + system appearance**:
 
-`--theme light`, `dark`, `pi-studio-light` or `pi-studio-dark` fixes the theme, as does the path of a Pi theme `.json` file. Pi themes are resolved as Pi resolves them, so the colours match pi-markdown-preview inside Pi with the same theme.
+```bash
+agent-markdown-preview -a --turn-details
+agent-markdown-preview -a --agent-theme pi=pi-studio
+agent-markdown-preview --theme neutral --appearance dark
+agent-markdown-preview --theme claude --appearance light
+agent-markdown-preview --theme pi-studio
+```
+
+`--theme agent` selects a Claude, Codex or OpenCode preview palette from each response’s recorded source; Pi responses use Pi 1.0.4’s named stock light/dark pair. This also works through merged history and new responses. The mixed-agent overview, waiting pages and standalone files use the neutral palette. These are preview-owned presets, not automatic detection of an agent’s live terminal theme.
+
+![Default agent palettes and the optional Pi Studio pair — synthetic examples](screenshots/defaults-palettes.png)
+
+A named palette (`neutral`, `claude`, `codex`, `opencode`, `pi` or `pi-studio`) applies throughout the overview and its responses. `pi` uses bundled stock Pi colours, resolved with Pi’s own colour code and export backgrounds; `pi-studio` remains a separate optional palette. Layout and controls remain the same. Working follows its selected response’s palette and text size, while the overview keeps compact interface typography.
+
+Pairs follow the browser’s light/dark setting by default. `--appearance light` or `dark` fixes the appearance; `system` follows changes live. Mermaid pages reload to redraw diagrams in the new colours. Explicit `--theme auto` preserves the original preview light/dark pair; `light`, `dark` and names such as `pi-studio-dark` retain their fixed defaults unless `--appearance` overrides them.
+
+`--agent-theme pi=pi-studio` changes Pi responses only, leaving other agents and the neutral overview unchanged. The flag accepts the same presets, fixed variants and supported JSON files; repeat it for different agents. An explicit `--appearance` overrides paired choices. Overrides cannot be combined with a global `--theme` other than `agent`, and do not apply to standalone file previews.
+
+The stock pair is a pinned snapshot, not Pi’s terminal-derived `system` theme or live settings detection. See `src/themes/README.md` for provenance and regeneration. Runtime JSON imports support six-digit hex and 256-colour Pi themes; direct OKHSL/OKLCH imports are not yet supported. The stock themes are resolved to hex ahead of time, without a Pi runtime dependency.
+
+Pi theme `.json` files still select a single fixed theme. A contradictory appearance or `system` is rejected for a single file: the preview cannot invent its missing light/dark counterpart. Inside Pi, pi-markdown-preview continues to use Pi’s selected theme directly.
 
 ### How responses are found
 
@@ -191,7 +232,7 @@ cp ../pi-markdown-preview/client/* src/client/ && cp ../pi-markdown-preview/shar
 npm test
 ```
 
-`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.20.0. `src/themes` holds unchanged copies of pi-studio's theme files. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
+`scripts/extract-render-core.cjs` uses the TypeScript compiler to copy the top-level declarations the browser renderer depends on, verbatim and in their original order, replacing only Pi's `Theme` type with a structural equivalent. The files in `src/client` and `src/shared` are copied unchanged, currently from pi-markdown-preview 0.21.0. `src/themes` holds Pi Studio's theme files and pinned stock Pi colour snapshots with provenance and licensing. `test/equivalence.test.mjs` renders pi-markdown-preview's test fixtures and a code file in both themes and checks that the HTML is byte-identical to pi-markdown-preview's output. It uses `../pi-markdown-preview`, or the path in `AMP_REFERENCE`, and is skipped when neither is available.
 
 ## License
 

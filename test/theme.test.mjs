@@ -12,6 +12,22 @@ import { startFileWatch } from "../dist/watch.js";
 const hasPandoc = !spawnSync(process.env.PANDOC_PATH || "pandoc", ["--version"], { stdio: "ignore" }).error;
 const DOC = "# Title\n\nText with `code` and $x^2$.\n\n```python\nprint('hi')\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> quote\n\n```mermaid\nflowchart LR\n  A --> B\n```\n";
 
+test('Working extracts the actual renderer palette and font size, including adaptive Pi themes', async () => {
+ const { buildBrowserHtmlFromPandocFragment } = await import('../dist/render.js');
+ const { previewAppearanceStyle } = await import('../dist/shared/agent-page-style.js');
+ const { styleForPiTheme } = await import('../dist/pi-theme.js');
+ for (const style of [styleForMode('light'),styleForMode('dark'),styleForPiTheme('pi-studio-light'),styleForPiTheme('pi-studio-dark')]) {
+  const css=previewAppearanceStyle(buildBrowserHtmlFromPandocFragment('<p>Example</p>',style,undefined,[],21));
+  assert.ok(css.includes(`--bg:${style.palette.bg};`));assert.ok(css.includes(`--card:${style.palette.card};`));
+  assert.ok(css.includes(`color-scheme:${style.themeMode};`));assert.ok(css.includes('--preview-font-size:21px;'));
+ }
+ const light=styleForPiTheme('pi-studio-light'),dark=styleForPiTheme('pi-studio-dark');
+ const adaptive=makeThemeAdaptive(buildBrowserHtmlFromPandocFragment('<p>Example</p>',light,undefined,[],21),21,light,dark);
+ const css=previewAppearanceStyle(adaptive);
+ assert.ok(css.includes(`--bg:${light.palette.bg};`));assert.ok(css.includes(`--bg:${dark.palette.bg};`));
+ assert.ok(css.includes('@media(prefers-color-scheme:dark)'));
+});
+
 test("light and dark pages differ only in colour variables and the Mermaid configuration", { skip: !hasPandoc && "pandoc not installed" }, async () => {
 	// The adaptive page relies on this. If the renderer starts baking other
 	// theme-specific output into pages, this fails at regeneration time.
@@ -73,7 +89,7 @@ const piThemeModule = (() => {
 	return null;
 })();
 
-test("bundled pi-studio themes resolve exactly as Pi resolves them", { skip: !piThemeModule && "Pi's theme loader not found beside this checkout" }, async () => {
+test("bundled stock Pi and Pi Studio snapshots resolve exactly as Pi resolves them", { skip: !piThemeModule && "Pi's theme loader not found beside this checkout" }, async () => {
 	const { getPreviewStyle } = await import("../dist/render.js");
 	const { BUNDLED_THEMES, loadPiTheme } = await import("../dist/pi-theme.js");
 	const pi = await import(piThemeModule);
@@ -97,7 +113,7 @@ test("the pi-studio pair switches live like the default pair", { skip: !hasPando
 	assert.equal(makeThemeAdaptive(lightHtml, 16), null, "a page is only converted with the pair it was rendered for");
 });
 
-test("the CLI accepts the pi-studio themes and rejects unknown ones", { skip: !hasPandoc && "pandoc not installed", timeout: 30_000 }, async () => {
+test("the CLI accepts Pi and agent palettes, honours appearance, and rejects unknown themes", { skip: !hasPandoc && "pandoc not installed", timeout: 30_000 }, async () => {
 	const { spawn } = await import("node:child_process");
 	const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "amp-cli-theme-")));
@@ -107,8 +123,9 @@ test("the CLI accepts the pi-studio themes and rejects unknown ones", { skip: !h
 	assert.equal(bad.status, 2);
 	assert.match(bad.stderr, /Unknown theme "nope"/);
 	const { styleForPiTheme } = await import("../dist/pi-theme.js");
-	for (const [theme, bg] of [["pi-studio-dark", styleForPiTheme("pi-studio-dark").palette.bg], ["pi-studio", styleForPiTheme("pi-studio-light").palette.bg]]) {
-		const child = spawn(process.execPath, [cli, file, "--theme", theme, "--no-open"], { env: { ...process.env, AGENT_MARKDOWN_PREVIEW_HOME: join(dir, "state") } });
+	const { styleForPreset } = await import('../dist/appearance.js');
+	for (const [theme, bg, appearance] of [[undefined,styleForPreset("neutral","light").palette.bg],["pi",styleForPreset("pi","light").palette.bg],["pi-studio-dark", styleForPiTheme("pi-studio-dark").palette.bg], ["pi-studio", styleForPiTheme("pi-studio-light").palette.bg], ["claude",styleForPreset('claude','dark').palette.bg,'dark'], ['agent',styleForPreset('neutral','light').palette.bg,'light']]) {
+		const child = spawn(process.execPath, [cli, file, ...(theme ? ["--theme", theme] : []), ...(appearance ? ['--appearance',appearance] : []), "--no-open"], { env: { ...process.env, AGENT_MARKDOWN_PREVIEW_HOME: join(dir, "state") } });
 		const url = await new Promise((resolve, reject) => {
 			let out = "";
 			child.stdout.on("data", chunk => { out += chunk; const m = out.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/); if (m) resolve(m[0]); });
@@ -117,7 +134,7 @@ test("the CLI accepts the pi-studio themes and rejects unknown ones", { skip: !h
 		const html = await (await fetch(url)).text();
 		child.kill("SIGINT");
 		assert.match(html, new RegExp(`--bg: ${bg};`), theme);
-		assert.equal(/prefers-color-scheme: dark/.test(html), theme === "pi-studio", `${theme} follows the system only as a pair`);
+		assert.equal(/prefers-color-scheme: dark/.test(html), [undefined, "pi", "pi-studio"].includes(theme), `${theme} follows the system only as a pair`);
 	}
 });
 

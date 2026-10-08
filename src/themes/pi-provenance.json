@@ -1,0 +1,14 @@
+{
+  "package": "@earendil-works/pi-coding-agent",
+  "version": "1.0.4",
+  "themes": {
+    "light": {
+      "sourceSha256": "f590c51c2bc8b238891efd0e983473ed2e2a6487b6692cc1d4b2845165e703f7",
+      "resolvedSha256": "16ec1eb63ad29d4416f702c38a2a40a96a15a8ca81c8ea1428f7c0123ed60559"
+    },
+    "dark": {
+      "sourceSha256": "c11a588b714d35300293079b425fb09a3693d4b2d453585d211b08163c648b75",
+      "resolvedSha256": "1a86358dd436088b3a5a5307a744f7f0cf079d5511ca94185ac1bdb0b50590b9"
+    }
+  }
+}

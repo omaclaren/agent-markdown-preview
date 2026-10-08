@@ -2,9 +2,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { AGENTS, defaultSessionRoots, type AgentKind } from "./sessions.js";
-import { BUNDLED_THEMES, styleForPiTheme } from "./pi-theme.js";
-import type { PreviewStyle } from "./render.js";
-import { startFileWatch, startResponseWatch, startSessionIndex, styleForMode, type RunningWatch } from "./watch.js";
+import { resolveTheme, parseAgentTheme, type Appearance } from "./appearance.js";
+import { startFileWatch, startResponseWatch, startSessionIndex, type RunningWatch } from "./watch.js";
 
 const HELP = `agent-markdown-preview: browser preview of coding-agent responses and local files.
 
@@ -20,11 +19,14 @@ Options:
   --session <path|ses_id>         Preview one JSONL log or OpenCode session ID directly.
   --opencode-db <path>            Custom OpenCode SQLite database (default: XDG data/opencode/opencode.db).
   --cwd <dir>                     Project directory whose sessions to follow (default: current).
-  --theme <name|file>             Page theme. auto (default) and pi-studio follow the system light/dark
-                                  setting live; light, dark, pi-studio-light, pi-studio-dark or the path
-                                  of a Pi theme .json file are fixed.
+  --theme <name|file>             agent (default, by source), neutral, claude, codex, opencode, auto,
+                                  pi, pi-studio, a -light/-dark variant, or a Pi theme .json file.
+  --agent-theme <agent=theme>     Override one agent, e.g. pi=pi-studio. Repeatable; requires agent mode.
+  --appearance <mode>             system (default for pairs), light or dark. Overrides theme appearance.
+                                  Single Pi theme files keep their own fixed appearance.
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
+  --turn-details                  Opt in to recorded prompts, working and tool output/images (may contain sensitive content).
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
@@ -41,7 +43,7 @@ function fail(message: string): never {
 }
 
 function parseArgs(argv: string[]) {
-	const options = { agents: [] as AgentKind[], allProjects: false, cwdExplicit: false, merged: false, history: undefined as number | undefined, session: undefined as string | undefined, opencodeDb: undefined as string | undefined, cwd: process.cwd(), theme: "auto", fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
+	const options = { agents: [] as AgentKind[], allProjects: false, turnDetails: false, cwdExplicit: false, merged: false, history: undefined as number | undefined, session: undefined as string | undefined, opencodeDb: undefined as string | undefined, cwd: process.cwd(), theme: "agent", agentThemes: {} as Partial<Record<AgentKind, string>>, appearance: undefined as Appearance | undefined, fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		const value = () => {
@@ -65,10 +67,20 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--session") options.session = value();
 		else if (arg === "--opencode-db") options.opencodeDb = value();
 		else if (arg === "--merged") options.merged = true;
+		else if (arg === "--turn-details") options.turnDetails = true;
 		else if (arg === "--all-projects" || arg === "-a") options.allProjects = true;
 		else if (arg === "--cwd") { options.cwd = value(); options.cwdExplicit = true; }
 		else if (arg === "--theme") {
 			options.theme = value();
+		}
+		else if (arg === "--agent-theme") {
+			try { const [agent, theme] = parseAgentTheme(value()); options.agentThemes[agent] = theme; }
+			catch (error) { fail(error instanceof Error ? error.message : String(error)); }
+		}
+		else if (arg === "--appearance") {
+			const mode = value();
+			if (!["system", "light", "dark"].includes(mode)) fail("--appearance must be system, light or dark.");
+			options.appearance = mode as Appearance;
 		}
 		else if (arg === "--font-size") {
 			options.fontSize = Number(value());
@@ -84,22 +96,11 @@ function parseArgs(argv: string[]) {
 		else if (options.file) fail("Only one file can be watched per command.");
 		else options.file = arg;
 	}
+	if (options.file && Object.keys(options.agentThemes).length) fail("--agent-theme applies to agent sessions, not file watching.");
+	if (options.file && options.turnDetails) fail("--turn-details applies to agent sessions, not file watching.");
 	if (options.file && (options.session || options.merged || options.agents.length || options.opencodeDb || options.allProjects)) fail("--agent, --merged, --session, --all-projects and --opencode-db apply to agent sessions, not file watching.");
 	if (options.allProjects && (options.session || options.merged || options.cwdExplicit)) fail("--all-projects is an index mode; do not combine with --cwd, --session or --merged. Choose Merged within a folder in the index.");
 	return options;
-}
-
-/** Theme names: pairs follow the system light/dark setting; the rest are fixed. */
-function resolveTheme(name: string): { style: PreviewStyle; darkStyle?: PreviewStyle; followSystemTheme: boolean } {
-	const load = (theme: string) => {
-		try { return styleForPiTheme(theme); }
-		catch (error) { fail(`Could not load theme ${theme}: ${error instanceof Error ? error.message : String(error)}`); }
-	};
-	if (name === "auto") return { style: styleForMode("light"), darkStyle: styleForMode("dark"), followSystemTheme: true };
-	if (name === "light" || name === "dark") return { style: styleForMode(name), followSystemTheme: false };
-	if (name === "pi-studio") return { style: load("pi-studio-light"), darkStyle: load("pi-studio-dark"), followSystemTheme: true };
-	if (name in BUNDLED_THEMES || name.endsWith(".json")) return { style: load(name), followSystemTheme: false };
-	fail(`Unknown theme "${name}". Use auto, light, dark, pi-studio, pi-studio-light, pi-studio-dark or a Pi theme .json file.`);
 }
 
 function openInBrowser(url: string) {
@@ -115,19 +116,20 @@ async function main() {
 	if (spawnSync(pandoc, ["--version"], { stdio: "ignore" }).error) {
 		fail(`pandoc was not found (${pandoc}). Install it (e.g. brew install pandoc) or set PANDOC_PATH.`);
 	}
-	const { style, darkStyle, followSystemTheme } = resolveTheme(options.theme);
 	const log = (message: string) => process.stderr.write(message + "\n");
 	const roots = options.opencodeDb ? { ...defaultSessionRoots(), opencode: options.opencodeDb } : undefined;
 	let watch: RunningWatch;
 	try {
+		const theme = resolveTheme(options.theme, options.appearance, options.agentThemes);
 		watch = options.file
-			? await startFileWatch({ filePath: options.file, style, followSystemTheme, darkStyle, fontSizePx: options.fontSize, log })
+			? await startFileWatch({ filePath: options.file, ...theme, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, roots, fontSizePx: options.fontSize, historyFill: options.history, log })
-				: await startSessionIndex({ cwd: options.cwd, allProjects: options.allProjects, roots, style, followSystemTheme, darkStyle, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
+				? await startResponseWatch({ cwd: options.cwd, ...theme, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, roots, turnDetails: options.turnDetails, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, allProjects: options.allProjects, turnDetails: options.turnDetails, roots, ...theme, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}
+	if (options.turnDetails) process.stdout.write("Working enabled: prompts, tool output and recorded images may contain sensitive content. Only share this link with trusted viewers.\n");
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);

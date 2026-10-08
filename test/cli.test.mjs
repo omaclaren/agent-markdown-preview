@@ -14,6 +14,18 @@ async function until(check, label) {
 	throw new Error("Timed out waiting for " + label);
 }
 
+test("CLI turn-details opt-in is documented and rejected for file watching", () => {
+	const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+	assert.equal(help.status, 0); assert.match(help.stdout, /--turn-details/); assert.match(help.stdout, /--appearance/); assert.match(help.stdout, /agent \(default, by source\)/); assert.match(help.stdout, /--agent-theme/);
+	const appearance = spawnSync(process.execPath, [cli, "--appearance", "invalid", "--no-open"], { encoding: "utf8" });
+	assert.equal(appearance.status, 2); assert.match(appearance.stderr, /system, light or dark/);
+	const bad = spawnSync(process.execPath, [cli, "--turn-details", "example.md"], { encoding: "utf8" });
+	assert.equal(bad.status, 2); assert.match(bad.stderr, /applies to agent sessions/);
+	for (const args of [["--agent-theme","pi="],["--agent-theme","unknown=pi"],["--agent-theme","pi=agent"],["example.md","--agent-theme","pi=pi-studio"]]) {
+		const result=spawnSync(process.execPath,[cli,...args,"--no-open"],{encoding:"utf8"});assert.equal(result.status,2);assert.match(result.stderr,/--agent-theme/);
+	}
+});
+
 test("CLI opens new addresses, restarts quietly without a viewer, and supports explicit --open/--no-open", {
 	skip: (!hasPandoc && "pandoc not installed") || (process.platform === "win32" && "test opener shim is POSIX-only"), timeout: 30_000,
 }, async t => {
@@ -55,6 +67,10 @@ test("CLI opens new addresses, restarts quietly without a viewer, and supports e
 	t.after(async () => { await Promise.all(runs.map(run => run.stop())); rmSync(root, { recursive: true, force: true }); });
 
 	const first = await start([]);
+	const defaultHtml=await (await fetch(first.url)).text();
+	const {styleForPreset}=await import("../dist/appearance.js");
+	assert.ok(defaultHtml.includes(`--bg: ${styleForPreset("neutral","light").palette.bg};`));
+	assert.ok(defaultHtml.includes("prefers-color-scheme: dark"));
 	await until(() => opened().length === 1, "first launch opener");
 	assert.equal(opened()[0][0], first.url);
 	await first.stop();
@@ -87,4 +103,8 @@ test("CLI opens new addresses, restarts quietly without a viewer, and supports e
 	await sleep(100);
 	assert.equal(opened().length, 3, "the overview also stays quiet without a connected tab");
 	await overviewRestart.stop();
+	const traced = await start(["--turn-details", "--no-open"], "overview-state", "index");
+	assert.ok(traced.url !== overview.url, "Trace mode needs distinct remembered credentials.");
+	assert.match(traced.output, /prompts, tool output and recorded images may contain sensitive content/);
+	assert.equal(opened().length, 3); await traced.stop();
 });

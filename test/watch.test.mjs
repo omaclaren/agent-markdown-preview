@@ -192,7 +192,7 @@ test("restarts reuse remembered addresses and restore previews that were open", 
 	assert.equal(second.url, first.url, "the index comes back at the same address");
 	// Views open last time are restored without visiting the index, so old tabs reconnect.
 	await waitFor(async () => { try { return /Before restart/.test(await page(sessionUrl)); } catch { return false; } }, "restored session preview");
-	assert.match(await page(mergedUrl), /Before restart/);
+	await waitFor(async () => { try { return /Before restart/.test(await page(mergedUrl)); } catch { return false; } }, "restored merged preview");
 	assert.equal(await openView(second, session.id), sessionUrl, "same preview address after a restart");
 	appendFileSync(file, claudeAnswer("m2", "After restart", iso(1_000)));
 	await waitFor(async () => /After restart/.test(await page(sessionUrl)), "restored preview keeps updating");

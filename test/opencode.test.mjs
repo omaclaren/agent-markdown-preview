@@ -54,6 +54,73 @@ function fixture(t, layouts = [1, 2]) {
 	return { base, cwd, path, db, store, session, v1, v2, answer, source: id => openCodeSessionPath(path, id), roots: { opencode: path } };
 }
 
+test("OpenCode turn details: both schemas, exact answer, bounded parts and no database writes", async t => {
+	for (const version of [1, 2]) {
+		const f = fixture(t, [version]); f.session(version, "ses_trace");
+		if (version === 2) {
+			f.v2("ses_trace", "old", 1, "assistant", f.answer("OLD ANSWER"));
+			f.v2("ses_trace", "idle_old", 2, "idle");
+			f.v2("ses_trace", "failed_user", 3, "user", { text: "FAILED INPUT" });
+			f.v2("ses_trace", "failed_answer", 4, "assistant", f.answer("FAILED WORK", Date.now(), { error: { message: "failed" } }));
+			f.v2("ses_trace", "u", 5, "user", { text: "OpenCode prompt" });
+			f.v2("ses_trace", "work", 6, "assistant", f.answer("", Date.now(), { finish: "tool-calls", content: [
+				{ type: "reasoning", text: "Recorded summary", state: { secret: "OPAQUE" } },
+				{ type: "tool", id: "call", name: "read", state: { status: "completed", input: { path: "demo.md" }, content: [{ type: "text", text: "Tool output" }, { type: "image", data: "PRIVATE IMAGE" }] } },
+			] }));
+			f.v2("ses_trace", "final", 7, "assistant", f.answer("Answer")); f.v2("ses_trace", "idle", 8, "idle");
+		} else {
+			f.v1("ses_trace", "msg_001", "OLD ANSWER");
+			f.v1("ses_trace", "msg_001a", "FAILED INPUT", { role: "user" });
+			f.v1("ses_trace", "msg_001b", "FAILED WORK", { error: { message: "failed" } });
+			f.v1("ses_trace", "msg_002", "OpenCode prompt", { role: "user" });
+			f.v1("ses_trace", "msg_003", "Working", { finish: "tool-calls" });
+			f.db.prepare("INSERT INTO part VALUES (?,?,?,?,?,?)").run("prt_tool", "ses_trace", "msg_003", 1, 1, JSON.stringify({ type: "tool", callID: "call", tool: "read", state: { status: "completed", input: { path: "demo.md" }, output: "Tool output" } }));
+			f.v1("ses_trace", "msg_004", "Answer");
+		}
+		const before = [f.path, f.path + "-wal"].map(path => readFileSync(path));
+		const response = (await f.store.snapshot(f.source("ses_trace"))).history.at(-1);
+		const trace = await f.store.turnDetails(response, new AbortController().signal);
+		assert.equal(trace.events.filter(e => e.kind === "prompt").length, 1);
+		assert.equal(trace.events.filter(e => e.kind === "tool").length, 1);
+		assert.equal(trace.events.find(e => e.kind === "result").text, "Tool output");
+		assert.equal(trace.events.find(e => e.kind === "result").callId, "call");
+		assert.doesNotMatch(JSON.stringify(trace), /OLD ANSWER|FAILED INPUT|FAILED WORK|OPAQUE|PRIVATE IMAGE/);
+		assert.match(trace.notices.join(" "), /interruption\/failure/);
+		assert.equal((await f.store.turnDetails({ ...response, markdown: "changed" }, new AbortController().signal)).events.length, 0);
+		assert.deepEqual([f.path, f.path + "-wal"].map(path => readFileSync(path)), before);
+	}
+});
+
+test("OpenCode recorded images: v1 attachments/v2 file content, record bounds and unchanged database bytes", async t => {
+	const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1kAAAAASUVORK5CYII=", "base64");
+	// Ancillary padding makes this bigger than the former64 KiB SQL projection.
+	const padding = Buffer.alloc(80012); padding.writeUInt32BE(80000); padding.write("tEXt",4);
+	const data = Buffer.concat([png.subarray(0,-12),padding,png.subarray(-12)]).toString("base64");
+	const url = `data:image/png;base64,${data}`;
+	for (const version of [1,2]) {
+		const f=fixture(t,[version]);f.session(version,"ses_images");
+		const tool={type:"tool",id:"image-call",callID:"image-call",name:"screenshot",tool:"screenshot",state:{status:"completed",input:{path:"/never/read.png"},...(version===1?{output:"Recorded output",attachments:[{type:"file",mime:"image/png",url}]}:{content:[{type:"text",text:"Recorded output"},{type:"file",mime:"image/png",uri:url}]})}};
+		if(version===2){
+			f.v2("ses_images","u",1,"user",{text:"Show the recorded image"});
+			f.v2("ses_images","oversize",2,"assistant",f.answer("x".repeat(1024*1024),Date.now(),{finish:"tool-calls"}));
+			f.v2("ses_images","work",3,"assistant",f.answer("",Date.now(),{finish:"tool-calls",content:[tool]}));
+			f.v2("ses_images","final",4,"assistant",f.answer("Answer"));f.v2("ses_images","idle",5,"idle");
+		}else{
+			f.v1("ses_images","msg_001","Show the recorded image",{role:"user"});
+			f.v1("ses_images","msg_002","x".repeat(1024*1024),{finish:"tool-calls"});
+			f.v1("ses_images","msg_003","Working",{finish:"tool-calls"});
+			f.db.prepare("INSERT INTO part VALUES (?,?,?,?,?,?)").run("prt_tool","ses_images","msg_003",1,1,JSON.stringify(tool));
+			f.v1("ses_images","msg_004","Answer");
+		}
+		const before=[f.path,f.path+"-wal"].map(path=>readFileSync(path));
+		const response=(await f.store.snapshot(f.source("ses_images"))).history.at(-1);
+		const trace=await f.store.turnDetails(response,new AbortController().signal);
+		const result=trace.events.find(e=>e.kind==="result");assert.equal(result.text,"Recorded output");assert.equal(result.images[0].data,data);assert.equal(result.images[0].width,1);
+		assert.match(trace.notices.join(" "),/record or remaining read-size limit/);
+		assert.deepEqual([f.path,f.path+"-wal"].map(path=>readFileSync(path)),before);
+	}
+});
+
 test("OpenCode message adapters: v1 parts / v2 content, completed text only, stable revision keys", () => {
 	const read = createResponseReader("opencode", "/db#ses_abcd");
 	const data = { id: "msg_1", finish: "stop", time: { completed: 123 }, content: [{ type: "text", text: "First" }, { type: "reasoning", text: "private" }, { type: "tool", text: "output" }, { type: "text", text: "ignore", ignored: true }, { type: "text", text: "synthetic", synthetic: true }, { type: "text", text: "Second" }] };

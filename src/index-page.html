@@ -5,26 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent sessions</title>
 <style>
-:root {
-	--bg: #f7f6f3; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e3e1db; --accent: #2f5fd0;
-	--work: #b86e00; --hover: #f0eee8; color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-	:root { --bg: #161615; --panel: #1f1f1d; --ink: #ecebe6; --muted: #9c9a93; --line: #34332f; --accent: #7aa2ff; --work: #f0b458; --hover: #2a2926; color-scheme: dark; }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
-h1 { font-size: 18px; margin: 0 0 2px; }
+/*__AGENT_PAGE_STYLE__*/
 #cwd { color: var(--muted); font-size: 12px; margin: 0 0 18px; overflow-wrap: anywhere; }
 .project + .project { margin-top: 22px; }
 .project h2 { font-size: 16px; margin: 0 0 2px; overflow-wrap: anywhere; }
 .project-path { color: var(--muted); font-size: 12px; margin: 0 0 8px; overflow-wrap: anywhere; }
 ul { list-style: none; margin: 0; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+li { position: relative; }
+li:has(> .row:focus-visible), li:has(> .copy-preview-link:focus-visible) { background: var(--hover); }
+@media (hover: hover) { li[data-preview-id]:hover { background: var(--hover); } }
 li + li { border-top: 1px solid var(--line); }
+.copy-preview-link { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 5px; font: 16px system-ui; cursor: pointer; min-width: 32px; min-height: 32px; }
+.copy-preview-link::before { content: "⧉"; }
+.copy-preview-link[data-copy-state="copied"]::before { content: "✓"; }
+.copy-preview-link[data-copy-state="failed"]::before { content: "!"; }
+.copy-preview-link[aria-busy="true"]::before { content: "…"; }
+.copy-preview-link:hover, .copy-preview-link:focus-visible { color: var(--ink); }
+.copy-preview-link:focus-visible { outline: 2px solid var(--muted); outline-offset: -3px; }
+.copy-preview-link[aria-disabled="true"] { cursor: progress; }
+.copy-status, .copy-buffer { position: fixed; left: -10000px; top: 0; width: 1px; height: 1px; overflow: hidden; white-space: pre; }
+#copy-panel { position: fixed; right: 12px; top: 12px; z-index: 10; width: min(520px, calc(100vw - 24px)); padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px #0003; }
+#copy-panel p { margin: 0 0 8px; }
+#copy-panel textarea { width: 100%; color: inherit; background: var(--bg); border: 1px solid var(--line); padding: 8px; font: 13px monospace; }
+#copy-panel button { padding: 6px 12px; margin-top: 8px; font: inherit; color: inherit; background: var(--hover); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+@media (hover: none), (pointer: coarse) { .copy-preview-link, #copy-panel button { min-width: 44px; min-height: 44px; } }
+@media print { .copy-preview-link, #copy-panel, .copy-status { display: none !important; } li a.row { padding-right: 14px; } }
 li.all { border-bottom: 2px solid var(--line); }
-a.row { display: grid; grid-template-columns: 14px 1fr auto; gap: 4px 10px; align-items: baseline; padding: 10px 14px; color: inherit; text-decoration: none; }
-a.row:hover, a.row:focus-visible { background: var(--hover); outline: none; }
+a.row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; min-width: 0; gap: 4px 10px; align-items: baseline; padding: 10px 56px 10px 14px; color: inherit; text-decoration: none; }
+a.row:focus-visible { outline: 2px solid var(--muted); outline-offset: -4px; border-radius: 8px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); align-self: center; }
 .dot.working { background: var(--work); border-color: var(--work); animation: pulse 1.4s ease-in-out infinite; }
 .dot.recent { background: var(--muted); }
@@ -36,8 +44,10 @@ a.row:hover, a.row:focus-visible { background: var(--hover); outline: none; }
 .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .when.working { color: var(--work); }
 .go { color: var(--accent); }
+@media (hover: none), (pointer: coarse) { a.row { padding-right: 64px; } }
+@media (max-width: 520px) { a.row { grid-template-columns: 14px minmax(0, 1fr); } .when { grid-column: 2; grid-row: 2; } .title { grid-column: 2; grid-row: 3; } }
 #empty, #error { color: var(--muted); padding: 14px; }
-#error { color: #b3261e; }
+#error { color: var(--error, #b3261e); }
 footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
 </style>
 </head>
@@ -48,7 +58,9 @@ footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
 	<ul id="list" aria-label="Sessions"></ul>
 	<div id="groups" hidden></div>
 	<div id="error" role="alert" hidden></div>
-	<footer>Each entry opens its live preview in a new tab; entries marked “open” have a preview tab that checked in recently. <span id="scope-note">Sessions active in the last 3 days are listed, most recently active first.</span></footer>
+	<p class="copy-status" role="status" aria-live="polite"></p>
+	<div id="copy-panel" role="dialog" aria-label="Copy preview link manually" hidden><p>Clipboard unavailable. Select this private preview link and copy it:</p><textarea rows="3" readonly aria-label="Preview link"></textarea><button type="button">Close</button></div>
+	<footer>Recent sessions (last 3 days). Keep preview links private.</footer>
 </main>
 <script>
 "use strict";
@@ -62,9 +74,76 @@ const ago = ms => {
 	return Math.round(s / 86400) + " d ago";
 };
 const WORKING_STALE_MS = 15 * 60 * 1000;
+const rowCache = new Map();
+const copyPanel = document.getElementById("copy-panel"), copyField = copyPanel.querySelector("textarea"), copyStatus = document.querySelector(".copy-status");
+let interactionVersion = 0, panelOwner, statusOwner;
+window.addEventListener("pointerdown", () => { interactionVersion++; }, true);
+window.addEventListener("keydown", () => { interactionVersion++; }, true);
+function closeCopyPanel(restore = false) {
+	if (copyPanel.hidden) return;
+	copyPanel.hidden = true;
+	if (restore && panelOwner?.isConnected) panelOwner.focus({ preventScroll: true });
+}
+copyPanel.querySelector("button").addEventListener("click", () => closeCopyPanel(true));
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !copyPanel.hidden) { event.preventDefault(); closeCopyPanel(true); } });
+document.addEventListener("pointerdown", event => { if (!copyPanel.hidden && !copyPanel.contains(event.target)) closeCopyPanel(); });
+// Same plain-text fallback as the local-path controls: preserve selection/focus
+// and never silently report success if the browser refused the copy.
+function legacyCopy(value) {
+	const selection = window.getSelection(); if (!selection) return false;
+	const ranges = Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()), active = document.activeElement;
+	const buffer = document.createElement("pre"); buffer.className = "copy-buffer"; buffer.textContent = value; buffer.setAttribute("aria-hidden", "true");
+	const onCopy = event => { if (event.clipboardData) { event.clipboardData.setData("text/plain", value); event.preventDefault(); } };
+	try {
+		document.body.append(buffer); const range = document.createRange(); range.selectNodeContents(buffer); selection.removeAllRanges(); selection.addRange(range);
+		document.addEventListener("copy", onCopy, true); return document.execCommand("copy");
+	} catch { return false; }
+	finally {
+		document.removeEventListener("copy", onCopy, true); buffer.remove(); selection.removeAllRanges(); ranges.forEach(range => selection.addRange(range));
+		if (active?.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });
+	}
+}
+function copyButton(id) {
+	const button = document.createElement("button"); button.type = "button"; button.className = "copy-preview-link"; button.dataset.copyState = "idle"; button.title = "Copy preview link";
+	let pending = false, timer;
+	button.addEventListener("click", async () => {
+		if (pending) return;
+		pending = true; const interaction = interactionVersion; const current = () => interaction === interactionVersion && button.isConnected;
+		clearTimeout(timer); closeCopyPanel(); statusOwner = button; copyStatus.textContent = "Preparing preview link…";
+		button.setAttribute("aria-disabled", "true"); button.setAttribute("aria-busy", "true");
+		let copied = false, value;
+		try {
+			// Resolve a preview-scoped capability, not the wider overview token.
+			// This can prepare a preview but never opens a browser tab or desktop app.
+			const response = await fetch(`/api/preview-link/${id}?token=${encodeURIComponent(token)}`, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
+			if (!response.ok) throw new Error("Could not prepare preview link");
+			const data = await response.json(), url = new URL(data.url);
+			if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.searchParams.get("token")) throw new Error("Invalid preview link");
+			value = url.href;
+			if (current()) {
+				try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); copied = true; } } catch {}
+				if (!copied && current()) copied = legacyCopy(value);
+			}
+		} catch {}
+		finally { pending = false; button.removeAttribute("aria-disabled"); button.removeAttribute("aria-busy"); }
+		button.dataset.copyState = copied ? "copied" : "failed";
+		button.title = copied ? "Preview link copied" : value ? "Copy failed" : "Could not prepare preview link; try again";
+		if (statusOwner === button) copyStatus.textContent = copied ? "Preview link copied." : "Could not copy the preview link. Try again or copy manually.";
+		if (!copied && value && current()) { panelOwner = button; copyField.value = value; copyPanel.hidden = false; copyField.focus({ preventScroll: true }); copyField.select(); }
+		timer = setTimeout(() => { button.dataset.copyState = "idle"; button.title = "Copy preview link"; if (statusOwner === button) copyStatus.textContent = ""; }, 1600);
+	});
+	return button;
+}
 
 function row({ id, dotClass, name, shortId, title, when, whenClass }) {
-	const li = document.createElement("li");
+	const cached = rowCache.get(id);
+	if (cached) {
+		cached.dot.className = "dot " + (dotClass || ""); cached.whenEl.className = "when " + (whenClass || "");
+		if (cached.whenEl.textContent !== when) cached.whenEl.textContent = when;
+		if (cached.titleEl.textContent !== title) cached.titleEl.textContent = title;
+		return cached.li;
+	}
+	const li = document.createElement("li"); li.dataset.previewId = id;
 	const a = document.createElement("a");
 	a.className = "row";
 	a.href = link(id);
@@ -85,7 +164,9 @@ function row({ id, dotClass, name, shortId, title, when, whenClass }) {
 	titleEl.className = "title";
 	titleEl.textContent = title;
 	a.append(dot, nameEl, whenEl, titleEl);
-	li.append(a);
+	const copy = copyButton(id); copy.setAttribute("aria-label", "Copy preview link for " + name + (shortId ? " " + shortId : ""));
+	li.append(a, copy);
+	rowCache.set(id, { li, dot, whenEl, titleEl });
 	return li;
 }
 
@@ -107,7 +188,10 @@ function mergedRow(id, sessions, open, now, grouped) {
 	return merged;
 }
 
+let refreshing = false;
 async function refresh() {
+	if (refreshing) return;
+	refreshing = true;
 	try {
 		const response = await fetch(`/api/sessions?token=${encodeURIComponent(token)}`, { cache: "no-store" });
 		if (!response.ok) throw new Error(await response.text());
@@ -116,6 +200,7 @@ async function refresh() {
 		document.getElementById("heading").textContent = "Agent sessions · " + data.label;
 		document.getElementById("cwd").textContent = data.allProjects
 			? `${data.projects.length} project ${data.projects.length === 1 ? "folder" : "folders"} · ${data.sessions.length} ${data.sessions.length === 1 ? "session" : "sessions"}` : data.cwd;
+		const active = document.activeElement;
 		const list = document.getElementById("list"), groups = document.getElementById("groups");
 		list.hidden = data.allProjects;
 		groups.hidden = !data.allProjects;
@@ -130,7 +215,6 @@ async function refresh() {
 				section.append(heading, path, sessions); return section;
 			});
 			groups.replaceChildren(...sections);
-			document.getElementById("scope-note").textContent = `Folders are ordered by their most recent activity. Following up to ${data.sessionLimit} recent sessions in total, up to 8 per agent per folder, from the last 3 days.`;
 		} else {
 			list.replaceChildren(mergedRow("all", data.sessions, data.mergedOpen, data.now, false), ...sessionRows(data.sessions, data.now));
 		}
@@ -141,12 +225,16 @@ async function refresh() {
 				: "No recent agent sessions found for this directory yet. Start one here; it will appear automatically.";
 			(data.allProjects ? groups : list).append(empty);
 		}
+		const retained = new Set([...data.sessions.map(s => s.id), ...(data.allProjects ? data.projects.map(p => p.id) : ["all"])]);
+		for (const id of rowCache.keys()) if (!retained.has(id)) rowCache.delete(id);
+		// Retain copy state and keyboard focus across the overview's polling refresh.
+		if (active?.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });
 		document.getElementById("error").hidden = true;
 	} catch (error) {
 		const box = document.getElementById("error");
 		box.hidden = false;
 		box.textContent = "Lost contact with agent-markdown-preview (" + (error && error.message || error) + "). Is it still running?";
-	}
+	} finally { refreshing = false; }
 }
 refresh();
 setInterval(refresh, 2000);

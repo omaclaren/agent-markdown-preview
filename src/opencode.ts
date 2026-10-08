@@ -3,6 +3,8 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentResponse, SessionFile } from "./sessions.js";
+import { createTurnDetails } from "./shared/turn-details.js";
+import { TURN_READ_BYTES, TURN_RECORD_BYTES } from "./shared/read-turn-details.js";
 
 type Row = Record<string, any>;
 interface Database {
@@ -49,6 +51,7 @@ export interface OpenCodeStore {
 	/** Omit cwd to discover across projects (metadata only). */
 	list(cwd?: string): Promise<SessionFile[]>;
 	snapshot(path: string): Promise<OpenCodeSnapshot | null>;
+	turnDetails(response: AgentResponse, signal: AbortSignal): Promise<ReturnType<typeof createTurnDetails>["result"]>;
 	close(): void;
 }
 
@@ -223,6 +226,89 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				// Fit the default all-projects roster without idle-session cache thrash.
 				while (cache.size > 64) cache.delete(cache.keys().next().value!);
 				return value;
+			} finally { db.exec("ROLLBACK"); }
+		},
+		async turnDetails(response, signal) {
+			const id = openCodeSessionId(response.sessionPath);
+			if (!id || response.sessionPath !== openCodeSessionPath(path, id)) throw new Error("Invalid OpenCode session selector.");
+			signal.throwIfAborted();
+			const t = createTurnDetails();
+			const db = await connect();
+			if (!db) { t.note("The session database is no longer available."); return t.result; }
+			db.exec("BEGIN");
+			try {
+				const snapshot = readSnapshot(db, id);
+				if (!snapshot?.history.some(r => r.key === response.key && r.markdown === response.markdown)) {
+					t.note("This response cannot be matched to the recent completed OpenCode history."); return t.result;
+				}
+				const v2 = hasV2() && Boolean(db.prepare("SELECT id FROM session_v2 WHERE id=?").get(id));
+				const messageId = response.key.slice("opencode:".length);
+				const target = v2 ? db.prepare("SELECT seq FROM session_message WHERE session_id=? AND id=?").get(id, messageId) : undefined;
+				// Select metadata first, then read selected records one at a time. Larger
+				// inline images must not turn a 251-row query into a large blob allocation.
+				const projection = `CASE WHEN length(CAST(data AS BLOB))<=? THEN data ELSE NULL END AS data`;
+				const messageData = db.prepare(`SELECT ${projection} FROM ${v2 ? "session_message" : "message"} WHERE session_id=? AND id=?`);
+				const partData = v2 ? undefined : db.prepare(`SELECT ${projection} FROM part WHERE session_id=? AND id=?`);
+				const metadata = `${field("finish")} AS finish,${field("time.completed")} AS completed,(${field("error")} IS NOT NULL) AS errored,COALESCE(${field("summary")},0) AS summary`;
+				const rows = v2
+					? db.prepare(`SELECT id,type,${metadata} FROM session_message WHERE session_id=? AND seq<=? AND type IN ('user','assistant','idle','compaction','shell') ORDER BY seq DESC LIMIT 251`).all(id, target!.seq)
+					: db.prepare(`SELECT id,${field("role")} AS type,${metadata} FROM message WHERE session_id=? AND id<=? ORDER BY id DESC LIMIT 251`).all(id, messageId);
+				const selected: Row[] = [];
+				for (const row of rows) {
+					if (row.type === "compaction" || row.summary) { t.note("A compaction boundary occurs here; earlier activity is not reconstructed."); break; }
+					if (row.id !== messageId && row.type === "assistant" && (row.errored || ["error", "aborted", "cancelled"].includes(row.finish))) {
+						t.note("Earlier activity before a recorded interruption/failure is omitted."); break;
+					}
+					if (row.id !== messageId && (row.type === "idle" || (!v2 && row.type === "assistant" && row.completed != null && terminal.has(row.finish)) || snapshot.history.some(r => r.key === `opencode:${row.id}`))) break;
+					selected.push(row);
+				}
+				if (selected.length === 251) t.note("The turn exceeds the bounded history window; earlier activity is omitted.");
+				let partBudget = 250, bytes = 0;
+				for (const row of selected.reverse()) {
+					signal.throwIfAborted();
+					if (!["user", "assistant", "shell"].includes(row.type)) continue;
+					if (bytes >= TURN_READ_BYTES) { t.note("The read-size limit was reached; remaining activity is omitted."); break; }
+					const recorded = messageData.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, row.id)?.data;
+					if (typeof recorded !== "string") { t.note("A recorded message exceeded the record or remaining read-size limit and was omitted."); continue; }
+					bytes += Buffer.byteLength(recorded);
+					let data: Row;
+					try { data = JSON.parse(recorded); } catch { t.note("An invalid recorded message was omitted."); continue; }
+					if (row.type === "shell") {
+						t.add("tool", "User shell command", data.command);
+						t.add("result", "Shell output", data.output);
+						continue;
+					}
+					if (Array.isArray(data.files) && data.files.length) t.note("Prompt file attachments are omitted.");
+					let parts = data.content;
+					if (!v2) {
+						const raw = db.prepare(`SELECT id FROM part WHERE session_id=? AND message_id=? ORDER BY id LIMIT ?`).all(id, row.id, Math.max(0, partBudget));
+						partBudget -= raw.length;
+						parts = [];
+						for (const p of raw) {
+							signal.throwIfAborted();
+							if (bytes >= TURN_READ_BYTES) { t.note("The read-size limit was reached; remaining activity is omitted."); break; }
+							const recordedPart = partData!.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, p.id)?.data;
+							if (typeof recordedPart !== "string") { t.note("A recorded part exceeded the record or remaining read-size limit and was omitted."); continue; }
+							bytes += Buffer.byteLength(recordedPart);
+							try { parts.push(JSON.parse(recordedPart)); } catch { t.note("An invalid recorded part was omitted."); }
+						}
+						if (partBudget <= 0) t.note("The part limit was reached; remaining activity may be omitted.");
+					}
+					if (row.type === "user" && typeof data.text === "string" && !parts?.length) t.content(data.text, "user");
+					for (const p of Array.isArray(parts) ? parts : []) {
+						if (!p || p.ignored || p.synthetic) continue;
+						if (p.type === "tool") {
+							t.add("tool", `Tool: ${String(p.tool ?? p.name ?? "")}`, JSON.stringify(p.state?.input ?? p.input ?? {}, null, 2), p.callID ?? p.callId ?? p.id);
+							const error = typeof p.state?.error === "string" ? p.state.error : p.state?.error?.message;
+							const content = Array.isArray(p.state?.content) ? p.state.content : undefined;
+							const output = p.state?.output ?? content ?? error;
+							const attachments = [...(output === content ? [] : content ?? []), ...(Array.isArray(p.state?.attachments) ? p.state.attachments : [])];
+							t.toolResult(`Tool result${p.state?.status === "error" ? " (error)" : ""}`, output, p.callID ?? p.callId ?? p.id, attachments);
+						} else t.content([p], row.type, row.id === messageId);
+					}
+				}
+				if (!t.result.events.some(e => e.kind === "prompt")) t.note("The input prompt is not available in this recorded portion of the turn.");
+				return t.result;
 			} finally { db.exec("ROLLBACK"); }
 		},
 		close() { closed = true; reset(); },
