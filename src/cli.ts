@@ -26,7 +26,7 @@ Options:
                                   Single Pi theme files keep their own fixed appearance.
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
-  --turn-details                  Opt in to recorded prompts, working and tool output/images (may contain sensitive content).
+  --working                       Opt in to Working: recorded prompts, tool output and images (may contain sensitive content).
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
@@ -67,7 +67,8 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--session") options.session = value();
 		else if (arg === "--opencode-db") options.opencodeDb = value();
 		else if (arg === "--merged") options.merged = true;
-		else if (arg === "--turn-details") options.turnDetails = true;
+		// --turn-details is the undocumented 0.5.x spelling of --working.
+		else if (arg === "--working" || arg === "--turn-details") options.turnDetails = true;
 		else if (arg === "--all-projects" || arg === "-a") options.allProjects = true;
 		else if (arg === "--cwd") { options.cwd = value(); options.cwdExplicit = true; }
 		else if (arg === "--theme") {
@@ -97,7 +98,7 @@ function parseArgs(argv: string[]) {
 		else options.file = arg;
 	}
 	if (options.file && Object.keys(options.agentThemes).length) fail("--agent-theme applies to agent sessions, not file watching.");
-	if (options.file && options.turnDetails) fail("--turn-details applies to agent sessions, not file watching.");
+	if (options.file && options.turnDetails) fail("--working applies to agent sessions, not file watching.");
 	if (options.file && (options.session || options.merged || options.agents.length || options.opencodeDb || options.allProjects)) fail("--agent, --merged, --session, --all-projects and --opencode-db apply to agent sessions, not file watching.");
 	if (options.allProjects && (options.session || options.merged || options.cwdExplicit)) fail("--all-projects is an index mode; do not combine with --cwd, --session or --merged. Choose Merged within a folder in the index.");
 	return options;
@@ -130,6 +131,7 @@ async function main() {
 		fail(error instanceof Error ? error.message : String(error));
 	}
 	if (options.turnDetails) process.stdout.write("Working enabled: prompts, tool output and recorded images may contain sensitive content. Only share this link with trusted viewers.\n");
+	else if (!options.file) process.stdout.write("Tip: start with --working to see prompts and activity.\n");
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);

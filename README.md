@@ -20,7 +20,7 @@ Screenshots use synthetic sessions.
 
 - **Session index** — lists the recently active Claude Code, Codex, Pi and OpenCode sessions for a project with their titles, whether a turn is in progress and when each was last active. Sessions started later appear automatically. `--all-projects` groups sessions across folders in one index.
 - **Live response previews** — each session opens in its own tab and updates when the agent finishes a turn. A merged view shows the latest response from any session, labelled by source.
-- **[Working (optional)](#working-optional)** — a read-only view of recorded prompts, tool calls/results and images for a completed response. Enable with `--turn-details`.
+- **[Working (optional)](#working-optional)** — a read-only view of recorded prompts, tool calls/results and images for a completed response. Enable with `--working`.
 - **History** — each preview starts with the session's recent responses, so you can step back through them straight away.
 - **File previews** — preview a Markdown, LaTeX, code or diff file and follow its changes.
 - **Rendering** — Pandoc-based Markdown and LaTeX with math, syntax highlighting, tables, Mermaid diagrams, local images and `[an: ...]` annotation markers, using the same renderer as [pi-markdown-preview](https://github.com/omaclaren/pi-markdown-preview).
@@ -55,7 +55,7 @@ Run the command in the project directory where you are working with an agent:
 |---------|-------------|
 | `agent-markdown-preview` | Open the session index for the current directory |
 | `agent-markdown-preview --all-projects` | Open a cross-folder index, grouped by project |
-| `agent-markdown-preview -a --turn-details` | Browse all projects with [Working](#working-optional) enabled |
+| `agent-markdown-preview -a --working` | Browse all projects with [Working](#working-optional) enabled |
 | `agent-markdown-preview --merged` | Open one preview showing the latest response from any session here |
 | `agent-markdown-preview --session <path\|ses_id>` | Preview a single session log or OpenCode session |
 | `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
@@ -67,7 +67,7 @@ Run the command in the project directory where you are working with an agent:
 | `-a`, `--all-projects` | Discover recent sessions across folders instead of just the current directory |
 | `--opencode-db <path>` | OpenCode SQLite file instead of the default XDG data location |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
-| `--turn-details` | Opt in to a read-only view of recorded inputs, working, tool output and recorded images (may contain sensitive content) |
+| `--working` | Opt in to a read-only view of recorded inputs, working, tool output and recorded images (may contain sensitive content) |
 | `--theme <name\|file>` | `agent` (default, by source), `auto` (legacy palette), `neutral`, `claude`, `codex`, `opencode`, `pi`, `pi-studio`, a `-light`/`-dark` variant, or a Pi theme `.json` file |
 | `--agent-theme <agent=theme>` | Override one agent, e.g. `pi=pi-studio`; repeatable, last value per agent wins; requires agent theme mode |
 | `--appearance <mode>` | `system` (default for pairs), `light` or `dark`; overrides a theme's appearance |
@@ -129,7 +129,7 @@ File previews start with the current version of the file and add a revision each
 ### Working (optional)
 
 ```bash
-agent-markdown-preview --turn-details
+agent-markdown-preview --working
 ```
 
 Select **Working** beside a completed response for a read-only view of its recorded prompts, progress, exposed thinking/reasoning and tool calls/results. Some content may be missing or shortened. Prompts start expanded; activity and results start folded. Commands, file reads and requested edits have readable argument views, with the recorded JSON available. Result text can wrap, and recorded image thumbnails can be enlarged.

@@ -87,7 +87,7 @@ async function fixture(t){
 test('CLI defaults select stock Pi per response and allow a Pi-only Studio override', {skip:!pandoc,timeout:30000},async t=>{
  const f=await fixture(t);
  for(const override of [false,true]){
-  const child=spawn(process.execPath,[new URL('../dist/cli.js',import.meta.url).pathname,'--agent','pi','--session',f.piPath,'--turn-details','--no-open',...(override?['--agent-theme','pi=neutral','--agent-theme','pi=pi-studio']:[])],{env:{...process.env,AGENT_MARKDOWN_PREVIEW_HOME:join(f.base,'state')}});
+  const child=spawn(process.execPath,[new URL('../dist/cli.js',import.meta.url).pathname,'--agent','pi','--session',f.piPath,'--working','--no-open',...(override?['--agent-theme','pi=neutral','--agent-theme','pi=pi-studio']:[])],{env:{...process.env,AGENT_MARKDOWN_PREVIEW_HOME:join(f.base,'state')}});
   let out='',err='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>err+=b);
   const exited=new Promise(resolve=>child.once('exit',resolve));
   try{
