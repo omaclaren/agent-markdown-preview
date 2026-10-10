@@ -59,6 +59,8 @@ export interface SessionMonitor {
 	 */
 	onResponse(listener: (session: SessionState, response: AgentResponse, fresh: boolean) => void): () => void;
 	onChange(listener: () => void): () => void;
+	/** Raw records of one tracked JSONL session as they are read (Live). Costs nothing without subscribers. */
+	onRecord(id: string, listener: (record: unknown) => void): () => void;
 	close(): void;
 }
 
@@ -123,6 +125,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	const log = options.log ?? (() => {});
 	const find = createSessionFinder(options.roots);
 	const startedAt = Date.now();
+	const recordListeners = new Map<string, Set<(record: unknown) => void>>();
 	const recentMs = options.recentMs ?? 3 * 24 * 60 * 60 * 1000;
 	const maxPerAgent = options.maxPerAgent ?? 8;
 	const clockSkewMs = options.clockSkewMs ?? 5_000;
@@ -208,6 +211,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 			return;
 		}
 		entry.tail = tailJsonl(path, value => {
+			if (recordListeners.size) for (const listener of recordListeners.get(id) ?? []) listener(value);
 			for (const event of read(value)) {
 				if (event.kind === "title") { state.title = event.title; if (event.named) named.add(id); }
 				else if (event.kind === "working") { state.working = event.working; state.lastActivity = Math.max(state.lastActivity, event.time); }
@@ -328,7 +332,13 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		get: id => tracked.get(id)?.state,
 		onResponse(listener) { responseListeners.add(listener); return () => responseListeners.delete(listener); },
 		onChange(listener) { changeListeners.add(listener); return () => changeListeners.delete(listener); },
+		onRecord(id, listener) {
+			const listeners = recordListeners.get(id) ?? new Set();
+			listeners.add(listener); recordListeners.set(id, listeners);
+			return () => { listeners.delete(listener); if (!listeners.size) recordListeners.delete(id); };
+		},
 		close() {
+			recordListeners.clear();
 			closed = true;
 			clearInterval(timer);
 			for (const { tail } of tracked.values()) tail.close();

@@ -27,6 +27,7 @@ Options:
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --working                       Opt in to Working: recorded prompts, tool output and images (may contain sensitive content).
+  --live                          Also follow a Claude Code session's current turn as it is recorded (implies --working).
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
@@ -43,7 +44,7 @@ function fail(message: string): never {
 }
 
 function parseArgs(argv: string[]) {
-	const options = { agents: [] as AgentKind[], allProjects: false, turnDetails: false, cwdExplicit: false, merged: false, history: undefined as number | undefined, session: undefined as string | undefined, opencodeDb: undefined as string | undefined, cwd: process.cwd(), theme: "agent", agentThemes: {} as Partial<Record<AgentKind, string>>, appearance: undefined as Appearance | undefined, fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
+	const options = { agents: [] as AgentKind[], allProjects: false, turnDetails: false, live: false, cwdExplicit: false, merged: false, history: undefined as number | undefined, session: undefined as string | undefined, opencodeDb: undefined as string | undefined, cwd: process.cwd(), theme: "agent", agentThemes: {} as Partial<Record<AgentKind, string>>, appearance: undefined as Appearance | undefined, fontSize: undefined as number | undefined, open: "auto" as "auto" | "always" | "never", file: undefined as string | undefined };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		const value = () => {
@@ -69,6 +70,7 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--merged") options.merged = true;
 		// --turn-details is the undocumented 0.5.x spelling of --working.
 		else if (arg === "--working" || arg === "--turn-details") options.turnDetails = true;
+		else if (arg === "--live") { options.live = true; options.turnDetails = true; }
 		else if (arg === "--all-projects" || arg === "-a") options.allProjects = true;
 		else if (arg === "--cwd") { options.cwd = value(); options.cwdExplicit = true; }
 		else if (arg === "--theme") {
@@ -98,6 +100,7 @@ function parseArgs(argv: string[]) {
 		else options.file = arg;
 	}
 	if (options.file && Object.keys(options.agentThemes).length) fail("--agent-theme applies to agent sessions, not file watching.");
+	if (options.file && options.live) fail("--live applies to agent sessions, not file watching.");
 	if (options.file && options.turnDetails) fail("--working applies to agent sessions, not file watching.");
 	if (options.file && (options.session || options.merged || options.agents.length || options.opencodeDb || options.allProjects)) fail("--agent, --merged, --session, --all-projects and --opencode-db apply to agent sessions, not file watching.");
 	if (options.allProjects && (options.session || options.merged || options.cwdExplicit)) fail("--all-projects is an index mode; do not combine with --cwd, --session or --merged. Choose Merged within a folder in the index.");
@@ -125,13 +128,14 @@ async function main() {
 		watch = options.file
 			? await startFileWatch({ filePath: options.file, ...theme, fontSizePx: options.fontSize, log })
 			: options.merged || options.session
-				? await startResponseWatch({ cwd: options.cwd, ...theme, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, roots, turnDetails: options.turnDetails, fontSizePx: options.fontSize, historyFill: options.history, log })
-				: await startSessionIndex({ cwd: options.cwd, allProjects: options.allProjects, turnDetails: options.turnDetails, roots, ...theme, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
+				? await startResponseWatch({ cwd: options.cwd, ...theme, agents: options.agents.length ? options.agents : undefined, sessionPath: options.session, roots, turnDetails: options.turnDetails, live: options.live, fontSizePx: options.fontSize, historyFill: options.history, log })
+				: await startSessionIndex({ cwd: options.cwd, allProjects: options.allProjects, turnDetails: options.turnDetails, live: options.live, roots, ...theme, agents: options.agents.length ? options.agents : undefined, fontSizePx: options.fontSize, historyFill: options.history, log });
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 	}
 	if (options.turnDetails) process.stdout.write("Working enabled: prompts, tool output and recorded images may contain sensitive content. Only share this link with trusted viewers.\n");
 	else if (!options.file) process.stdout.write("Tip: start with --working to see prompts and activity.\n");
+	if (options.live) process.stdout.write("Live enabled for Claude Code sessions: open a session, then Follow current turn in its history menu. It shows unfinished tool output as the agent records it.\n");
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);

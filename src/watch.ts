@@ -19,18 +19,19 @@ import { AGENT_LABELS, AGENTS, defaultSessionRoots, detectAgent, type AgentKind,
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { isHtmlPagePath } from "./shared/html-page-preview.js";
 import { readLinkedDocument } from "./shared/read-linked-document.js";
-import { readTurnDetails } from "./shared/read-turn-details.js";
+import { readRecordTail, readTurnDetails } from "./shared/read-turn-details.js";
+import { createLiveTurnProjector } from "./shared/turn-details.js";
 import { AGENT_PAGE_STYLE, applyPreviewAppearance } from "./shared/agent-page-style.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
 
 const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run agent-markdown-preview again for a fresh link." };
 /** Remembered addresses make restarted previews reconnect; `null` disables. */
-const slotStore = (stateDir: string | null | undefined, turnDetails = false): SlotStore | null => {
+const slotStore = (stateDir: string | null | undefined, turnDetails = false, live = false): SlotStore | null => {
 	if (stateDir === null) return null;
 	const store = createSlotStore(stateDir ?? defaultStateDir());
-	if (!turnDetails) return store;
-	// Previously shared ordinary-preview links must not gain trace access.
-	const scope = "turn-details|";
+	if (!turnDetails && !live) return store;
+	// Previously shared ordinary-preview or Working links must not gain trace or live access.
+	const scope = live ? "live|" : "turn-details|";
 	return { get: key => store.get(scope + key), set: (key, slot) => store.set(scope + key, slot),
 		recent: (prefix, ms) => store.recent(scope + prefix, ms).map(key => key.slice(scope.length)) };
 };
@@ -70,9 +71,72 @@ interface ResponseView {
 	close(): Promise<void>;
 }
 
+/** Live recorded activity for one session; see createLiveSource. */
+export interface LiveSource {
+	current(signal?: AbortSignal): Promise<string | undefined>;
+	snapshot(anchor: string, signal?: AbortSignal): Promise<object | undefined>;
+	close(): void;
+}
+
+const LIVE_LEASE_MS = 30_000;
+const LIVE_PENDING_LIMIT = 10_000;
+/**
+ * Live recorded activity for one Claude Code session. Nothing is allocated
+ * until a live page asks; each request renews a lease, and 30 s without one
+ * drops the projection and the record subscription. Exported for tests.
+ */
+export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string }, { leaseMs = LIVE_LEASE_MS } = {}): LiveSource {
+	type Lease = { projector: ReturnType<typeof createLiveTurnProjector>; ready: Promise<void>; unsubscribe: () => void; timer?: NodeJS.Timeout };
+	let lease: Lease | undefined;
+	const release = () => {
+		if (!lease) return;
+		clearTimeout(lease.timer);
+		lease.unsubscribe();
+		lease = undefined;
+	};
+	const ensure = async () => {
+		if (!lease) {
+			const projector = createLiveTurnProjector("claude");
+			const pending: unknown[] = [];
+			let following = false;
+			// Subscribe before backfilling; records read twice are ignored by uuid.
+			const unsubscribe = monitor.onRecord(session.id, record => {
+				if (following) projector.push(record, Date.now());
+				else if (pending.length < LIVE_PENDING_LIMIT) pending.push(record);
+			});
+			const created: Lease = { projector, unsubscribe, ready: Promise.resolve() };
+			created.ready = (async () => {
+				try {
+					const { records } = await readRecordTail(session.path);
+					const now = Date.now();
+					for (const record of records) projector.push(record, now);
+				} finally {
+					following = true;
+					for (const record of pending.splice(0)) projector.push(record, Date.now());
+				}
+			})();
+			created.ready.catch(() => { if (lease === created) release(); });
+			lease = created;
+		}
+		const active = lease;
+		clearTimeout(active.timer);
+		active.timer = setTimeout(() => { if (lease === active) release(); }, leaseMs);
+		active.timer.unref();
+		await active.ready;
+		return active.projector;
+	};
+	return {
+		current: async () => (await ensure()).current(),
+		snapshot: async anchor => (await ensure()).snapshot(anchor),
+		close: release,
+	};
+}
+
 interface ViewOptions {
 	cwd: string;
 	turnDetails?: boolean;
+	/** Live recorded activity for this view's single Claude session. */
+	live?: LiveSource;
 	style: PreviewStyle;
 	fontSizePx: number;
 	label: string;
@@ -131,13 +195,15 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	const { started: server, reused } = await startAtSlot(options.slots, options.slotKey, (port, token) => createBrowserWatchServer(initialHtml, options.cwd, {
 		initialDocumentIsHistory: seeded.length > 0, sourceLabel: options.label, port, token, ...PAGE_TEXT,
 		initialTurnDetails: detailsFor(seeded[0]?.response),
+		initialResponseKey: seeded[0]?.response.key,
+		...(options.live ? { live: options.live } : {}),
 		renderLocalDocument: (path, signal, revision) => {
 			const { style, finish } = revisionThemes.get(revision ?? 1) ?? options;
 			return localDocumentRenderer(style, options.fontSizePx, finish)(path, signal);
 		},
 	}));
 	if (seeded[0]) rememberTheme(1, seeded[0].response);
-	for (const { html, response } of seeded.slice(1)) rememberTheme(server.updateDocument(html, { appendToHistory: true, turnDetails: detailsFor(response) }), response);
+	for (const { html, response } of seeded.slice(1)) rememberTheme(server.updateDocument(html, { appendToHistory: true, turnDetails: detailsFor(response), responseKey: response.key }), response);
 	const shown = seeded.at(-1)?.response;
 	let shownKey = shown?.key ?? null, shownMarkdown = shown?.markdown ?? "", closed = false;
 	let queue = Promise.resolve();
@@ -157,7 +223,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 					const html = await render(response);
 					if (closed) return;
 					// Not inside the optional call: `f?.(g())` skips g() when f is absent.
-					const revision = server.updateDocument(html, { appendToHistory, turnDetails: detailsFor(response) });
+					const revision = server.updateDocument(html, { appendToHistory, turnDetails: detailsFor(response), responseKey: response.key });
 					rememberTheme(revision, response);
 					options.onRendered?.(response, revision);
 				} catch (error) {
@@ -167,6 +233,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		},
 		async close() {
 			closed = true;
+			options.live?.close();
 			await queue.catch(() => {});
 			await server.close();
 		},
@@ -177,6 +244,8 @@ interface CommonOptions {
 	cwd: string;
 	/** Opt-in: expose recorded prompts/tool activity for retained responses. */
 	turnDetails?: boolean;
+	/** Opt-in: follow a Claude Code session's current turn as it is recorded (implies turnDetails). */
+	live?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
 	allProjects?: boolean;
@@ -252,9 +321,9 @@ function captionFor(monitor: SessionMonitor) {
 }
 
 /** Creates the merged view over all monitored sessions (or one pinned session). */
-async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string) {
+async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string, live?: LiveSource) {
 	return createResponseView({
-		slots: slotStore(options.stateDir, options.turnDetails), slotKey, turnDetails: options.turnDetails, ...themeFor(options, base.fontSizePx),
+		slots: slotStore(options.stateDir, options.turnDetails, options.live), slotKey, turnDetails: options.turnDetails, live, ...themeFor(options, base.fontSizePx),
 		cwd: base.cwd, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions().filter(s => s.cwd === base.cwd), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captionFor(monitor),
@@ -278,7 +347,9 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 		if (!view) { if (fresh) arrivedDuringStart.push(response); }
 		else if (fresh || response.key === view.shownKey) view.show(response);
 	});
-	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`);
+	// Live follows one session: only a pinned Claude Code session gets it.
+	const live = options.live && pinned?.agent === "claude" ? createLiveSource(base.monitor, pinned) : undefined;
+	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, live);
 	view = started;
 	for (const response of arrivedDuringStart.splice(0)) started.show(response);
 	return { url: started.url, label, reused: started.reused, waitForViewer: ms => pollFor(() => started.clientCount > 0, ms), async close() { base.monitor.close(); await started.close(); } };
@@ -296,7 +367,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 	const overviewTheme = themeFor(options, 14);
 	const indexPage = applyPreviewAppearance(INDEX_PAGE, overviewTheme.finish(buildBrowserHtmlFromPandocFragment("", overviewTheme.style, undefined, [], 14)));
 	const log = options.log ?? (() => {});
-	const slots = slotStore(options.stateDir, options.turnDetails);
+	const slots = slotStore(options.stateDir, options.turnDetails, options.live);
 	let token = "", lastPollAt = 0, closed = false;
 	const views = new Map<string, Promise<ResponseView>>();
 	const started = new Map<string, ResponseView>();
@@ -327,7 +398,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (!session && !project && !(id === "all" && !allProjects)) return null;
 		const resourceCwd = session?.cwd ?? project?.cwd ?? cwd;
 		const created = session
-			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && session.agent === "claude" ? createLiveSource(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: sessionKey(session) })

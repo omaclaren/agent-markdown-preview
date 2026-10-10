@@ -16,9 +16,11 @@ async function until(check, label) {
 
 test("CLI --working opt-in is documented, keeps its hidden alias and is rejected for file watching", () => {
 	const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
-	assert.equal(help.status, 0); assert.match(help.stdout, /--working/); assert.doesNotMatch(help.stdout, /--turn-details/); assert.match(help.stdout, /--appearance/); assert.match(help.stdout, /agent \(default, by source\)/); assert.match(help.stdout, /--agent-theme/);
+	assert.equal(help.status, 0); assert.match(help.stdout, /--working/); assert.match(help.stdout, /--live\s+Also follow a Claude Code session/); assert.doesNotMatch(help.stdout, /--turn-details/); assert.match(help.stdout, /--appearance/); assert.match(help.stdout, /agent \(default, by source\)/); assert.match(help.stdout, /--agent-theme/);
 	const appearance = spawnSync(process.execPath, [cli, "--appearance", "invalid", "--no-open"], { encoding: "utf8" });
 	assert.equal(appearance.status, 2); assert.match(appearance.stderr, /system, light or dark/);
+	const liveFile = spawnSync(process.execPath, [cli, "--live", "example.md"], { encoding: "utf8" });
+	assert.equal(liveFile.status, 2); assert.match(liveFile.stderr, /--live applies to agent sessions/);
 	for (const flag of ["--working", "--turn-details"]) {
 		const bad = spawnSync(process.execPath, [cli, flag, "example.md"], { encoding: "utf8" });
 		assert.equal(bad.status, 2); assert.match(bad.stderr, /--working applies to agent sessions/);
