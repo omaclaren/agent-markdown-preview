@@ -71,8 +71,8 @@ test("--live: a pinned Claude session follows its current turn through the serve
 	const first = await fetch(watch.url);
 	const cookie = first.headers.get("set-cookie").split(";")[0];
 	const root = await first.text();
-	const entry = root.match(/data-watch-control="live" href="([^"]+)"/)?.[1].replaceAll("&amp;", "&");
-	assert.ok(entry, "a pinned Claude session offers the Live tab");
+	const entry = root.match(/data-live-state="([^"]+)"/)?.[1].replaceAll("&amp;", "&").replace(/&format=json$/, "");
+	assert.ok(entry, "a pinned Claude session offers Follow activity with live Working");
 	const origin = new URL(watch.url).origin;
 	const get = path => fetch(new URL(path, origin), { headers: { cookie }, redirect: "manual" });
 	const redirect = await get(entry);
@@ -80,7 +80,7 @@ test("--live: a pinned Claude session follows its current turn through the serve
 	const livePage = redirect.headers.get("location");
 	assert.match(livePage, /^\/__pi_markdown_preview_live__\/p\?/);
 	const html = await (await get(livePage)).text();
-	assert.match(html, /<h1>Live · recorded activity<\/h1>/);
+	assert.match(html, /<h1>Working · live<\/h1>/);
 	assert.match(html, /Run the checks/);
 	const cursor = html.match(/data-live-cursor="([^"]+)"/)[1];
 	const updates = path => get(`${livePage.replace("?", "/updates?")}&cursor=${encodeURIComponent(path)}`).then(r => r.json());
@@ -97,7 +97,7 @@ test("--live is offered only where it applies: not for merged views, not without
 	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-0000000live3.jsonl"), prompt("p", "Hello") + answer("a", "m1", "Hi"));
 	const merged = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), turnDetails: true, live: true, ...fast });
 	t.after(() => merged.close());
-	assert.doesNotMatch(await (await fetch(merged.url)).text(), /<a data-watch-control="live"/, "merged views have no single current turn");
+	assert.doesNotMatch(await (await fetch(merged.url)).text(), /<button data-watch-control="follow-activity"/, "merged views have no single current turn");
 	const plain = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), turnDetails: true, ...fast });
 	t.after(() => plain.close());
 	const index = await fetch(plain.url);
@@ -106,12 +106,12 @@ test("--live is offered only where it applies: not for merged views, not without
 	const opened = await fetch(new URL(`/open/${sessions.sessions[0].id}?token=${new URL(plain.url).searchParams.get("token")}`, plain.url), { redirect: "manual" });
 	const sessionUrl = opened.headers.get("location");
 	assert.ok(sessionUrl);
-	assert.doesNotMatch(await (await fetch(sessionUrl)).text(), /<a data-watch-control="live"/, "without --live there is no live entry");
+	assert.doesNotMatch(await (await fetch(sessionUrl)).text(), /<button data-watch-control="follow-activity"/, "without --live there is no live entry");
 	// With --live, a Claude session opened from the index offers it, on fresh credentials.
 	const withLive = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), turnDetails: true, live: true, ...fast });
 	t.after(() => withLive.close());
 	const liveToken = new URL(withLive.url).searchParams.get("token");
 	const liveSessions = await (await fetch(new URL("/api/sessions?token=" + liveToken, withLive.url))).json();
 	const liveOpened = await fetch(new URL(`/open/${liveSessions.sessions[0].id}?token=${liveToken}`, withLive.url), { redirect: "manual" });
-	assert.match(await (await fetch(liveOpened.headers.get("location"))).text(), /<a data-watch-control="live"/);
+	assert.match(await (await fetch(liveOpened.headers.get("location"))).text(), /<button data-watch-control="follow-activity"/);
 });
