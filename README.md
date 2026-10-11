@@ -68,7 +68,7 @@ Run the command in the project directory where you are working with an agent:
 | `--opencode-db <path>` | OpenCode SQLite file instead of the default XDG data location |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
 | `--working` | Opt in to a read-only view of recorded inputs, working, tool output and recorded images (may contain sensitive content) |
-| `--live` | Also follow a Claude Code session's current turn as the agent records it (implies `--working`). Open a session, then **Follow current turn** in its history menu, or turn on **Follow activity** there (Ctrl+Alt+A) to switch to Live when a turn starts and back to its response when it finishes. Updates arrive as records are written, not token by token |
+| `--live` | Also follow a Claude Code session's current turn as the agent records it (implies `--working`). Open a session, then **Live** in its toolbar (Ctrl+Alt+L), or turn on **Follow activity** there (Ctrl+Alt+A) to switch to Live when a turn starts and back to its response when it finishes. Updates arrive as records are written, not token by token |
 | `--theme <name\|file>` | `agent` (default, by source), `auto` (legacy palette), `neutral`, `claude`, `codex`, `opencode`, `pi`, `pi-studio`, a `-light`/`-dark` variant, or a Pi theme `.json` file |
 | `--agent-theme <agent=theme>` | Override one agent, e.g. `pi=pi-studio`; repeatable, last value per agent wins; requires agent theme mode |
 | `--appearance <mode>` | `system` (default for pairs), `light` or `dark`; overrides a theme's appearance |

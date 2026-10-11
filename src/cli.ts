@@ -135,7 +135,7 @@ async function main() {
 	}
 	if (options.turnDetails) process.stdout.write("Working enabled: prompts, tool output and recorded images may contain sensitive content. Only share this link with trusted viewers.\n");
 	else if (!options.file) process.stdout.write("Tip: start with --working to see prompts and activity.\n");
-	if (options.live) process.stdout.write("Live enabled for Claude Code sessions: open a session, then Follow current turn in its history menu. It shows unfinished tool output as the agent records it.\n");
+	if (options.live) process.stdout.write("Live enabled for Claude Code sessions: open a session, then Live in its toolbar (or turn on Follow activity). It shows unfinished tool output as the agent records it.\n");
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);
