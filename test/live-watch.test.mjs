@@ -4,6 +4,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { claudeProjectDirName } from "../dist/sessions.js";
 import { createLiveLeases, createLiveSource, startResponseWatch, startSessionIndex, styleForMode } from "../dist/watch.js";
 
@@ -134,6 +136,57 @@ test("Live source: records arriving faster than a backfill reads are read again 
 	assert.equal(await source.current(), "p");
 	assert.equal(reads, 2, "the overflow is recovered by reading the file again");
 	assert.equal((await source.snapshot("p")).events.length, 21, "nothing that arrived during the first read is lost");
+});
+
+test("Live source: a backfill that keeps overflowing is refused, never accepted with records missing", async t => {
+	const f = fixture(t);
+	const path = join(f.claudeDir, "00000000-0000-4000-8000-0000000flod2.jsonl");
+	writeFileSync(path, prompt("p", "Start"));
+	const subscribers = new Set();
+	const monitor = { onRecord(id, record) { subscribers.add(record); return () => subscribers.delete(record); } };
+	const leases = createLiveLeases();
+	const exclusive = leases.exclusive;
+	let flooding = true, burst = 0;
+	leases.exclusive = read => {
+		if (flooding) {
+			// Pi's finalOverflow probe: two records just under the per-record limit, every attempt.
+			const lines = Array.from({ length: 2 }, (_, i) => result(`b${burst}-${i}`, `k${burst}-${i}`, "x".repeat(600 * 1024)));
+			burst++;
+			appendFileSync(path, lines.join(""));
+			for (const record of subscribers) for (const text of lines) record(JSON.parse(text), text.length);
+		}
+		return exclusive(read);
+	};
+	const source = createLiveSource(monitor, { id: "s", path }, { leases });
+	t.after(() => source.close());
+	await assert.rejects(source.current(), /faster than it can be read/);
+	assert.equal(burst, 3);
+	assert.equal(leases.active, 0, "the incomplete lease is released");
+	assert.equal(subscribers.size, 0);
+	flooding = false;
+	assert.equal(await source.current(), "p", "a later request reads the file again");
+	assert.deepEqual((await source.snapshot("p")).events.filter(e => e.id.startsWith("b2-")).length, 2, "the last burst is not lost");
+});
+
+test("Live source: nothing read for a backfill is kept once its lease ends", async t => {
+	v8.setFlagsFromString("--expose-gc");
+	const gc = vm.runInNewContext("gc");
+	const settle = async () => { for (let i = 0; i < 3; i++) { await new Promise(done => setImmediate(done)); gc(); } };
+	const f = fixture(t);
+	const path = join(f.claudeDir, "00000000-0000-4000-8000-000000retain.jsonl");
+	// Pi's lease-retention probe: a backfill of about 7 MB.
+	writeFileSync(path, prompt("p", "Start") + Array.from({ length: 700 }, (_, i) => result(`r${i}`, `k${i}`, "x".repeat(10_000))).join(""));
+	const leases = createLiveLeases();
+	const monitor = { onRecord() { return () => {}; } };
+	await settle();
+	const before = process.memoryUsage().heapUsed;
+	const source = createLiveSource(monitor, { id: "s", path }, { leaseMs: 100, leases });
+	assert.equal(await source.current(), "p");
+	await waitFor(() => leases.active === 0, "lease expiry", 2000);
+	await settle();
+	const retained = process.memoryUsage().heapUsed - before;
+	assert.ok(retained < 2 * 1024 * 1024, `retained ${(retained / 1048576).toFixed(2)} MiB after the lease ended`);
+	source.close();
 });
 
 test("Live source: only a backfill that starts partway shows activity before its first prompt", async t => {

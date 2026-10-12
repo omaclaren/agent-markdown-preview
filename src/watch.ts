@@ -99,7 +99,8 @@ export function createLiveLeases(limit = LIVE_SESSION_LIMIT): LiveLeases {
 		take: () => active < limit ? (active++, true) : false,
 		give: () => { active = Math.max(0, active - 1); },
 		get active() { return active; },
-		exclusive<T>(read: () => Promise<T>) { const run = queue.then(read, read); queue = run.catch(() => {}); return run; },
+		// The barrier keeps no result: a read's records belong to its caller alone.
+		exclusive<T>(read: () => Promise<T>) { const run = queue.then(read, read); queue = run.then(() => {}, () => {}); return run; },
 	};
 }
 const processLeases = createLiveLeases();
@@ -142,8 +143,12 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 		created.ready = (async () => {
 			for (let attempt = 1; ; attempt++) {
 				const { records, startsMidway } = await leases.exclusive(() => readRecordTail(session.path));
-				// Records dropped while reading are in the file now: read it again.
-				if (overflow && attempt < LIVE_READ_ATTEMPTS) { overflow = false; pendingBytes = 0; continue; }
+				// Records dropped while reading are in the file now: read it again. Never
+				// accept a read that missed records; a later request starts over.
+				if (overflow) {
+					if (attempt >= LIVE_READ_ATTEMPTS) throw new Error("Recorded activity is arriving faster than it can be read; try again shortly.");
+					overflow = false; pendingBytes = 0; continue;
+				}
 				const projector = createLiveTurnProjector("claude", { partialStart: startsMidway });
 				const loadedAt = Date.now();
 				for (const record of records) projector.push(record, loadedAt, true);
