@@ -12,23 +12,30 @@ export interface JsonlTail {
 
 /**
  * Follows an append-only JSONL file. Complete lines are parsed and delivered in
- * order; a partial trailing line waits for the rest. Truncation restarts from 0.
- * Only the last `maxBackfillBytes` of existing content are read initially.
+ * order, with their length; a partial trailing line waits for the rest. When the
+ * file is truncated or replaced (another inode at the path), `onReset` is called
+ * and reading starts over as for a new file: the last `maxBackfillBytes`, as
+ * initially.
  */
-export function tailJsonl(path: string, onEntry: (entry: unknown) => void, { intervalMs = 300, maxBackfillBytes = 8_000_000, onError }: {
-	intervalMs?: number; maxBackfillBytes?: number; onError?: (error: unknown) => void;
+export function tailJsonl(path: string, onEntry: (entry: unknown, length: number) => void, { intervalMs = 300, maxBackfillBytes = 8_000_000, onError, onReset }: {
+	intervalMs?: number; maxBackfillBytes?: number; onError?: (error: unknown) => void; onReset?: () => void;
 } = {}): JsonlTail {
-	let offset: number | null = null, decoder = new StringDecoder("utf8"), remainder = "", skipFirstLine = false;
+	let offset: number | null = null, identity = "", decoder = new StringDecoder("utf8"), remainder = "", skipFirstLine = false;
 	let reading = false, again = false, closed = false;
 
 	async function readMore() {
 		const info = await stat(path).catch(() => null);
 		if (!info || closed) return;
+		const file = `${info.dev}:${info.ino}`;
+		if (offset !== null && (info.size < offset || file !== identity)) {
+			offset = null; remainder = ""; decoder = new StringDecoder("utf8");
+			onReset?.();
+		}
+		identity = file;
 		if (offset === null) {
 			offset = Math.max(0, info.size - maxBackfillBytes);
 			skipFirstLine = offset > 0;
 		}
-		if (info.size < offset) { offset = 0; remainder = ""; decoder = new StringDecoder("utf8"); skipFirstLine = false; }
 		if (info.size === offset) return;
 		const handle = await open(path, "r");
 		try {
@@ -45,7 +52,7 @@ export function tailJsonl(path: string, onEntry: (entry: unknown) => void, { int
 			if (!line.trim()) continue;
 			let entry: unknown;
 			try { entry = JSON.parse(line); } catch { continue; }
-			onEntry(entry);
+			onEntry(entry, line.length);
 		}
 	}
 	async function drain() {

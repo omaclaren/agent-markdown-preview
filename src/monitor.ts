@@ -59,8 +59,12 @@ export interface SessionMonitor {
 	 */
 	onResponse(listener: (session: SessionState, response: AgentResponse, fresh: boolean) => void): () => void;
 	onChange(listener: () => void): () => void;
-	/** Raw records of one tracked JSONL session as they are read (Live). Costs nothing without subscribers. */
-	onRecord(id: string, listener: (record: unknown) => void): () => void;
+	/**
+	 * Raw records of one tracked JSONL session as they are read (Live), with each
+	 * line's length. `onReset` is called when the file is truncated or replaced:
+	 * records after it belong to a new file. Costs nothing without subscribers.
+	 */
+	onRecord(id: string, listener: (record: unknown, length: number) => void, onReset?: () => void): () => void;
 	close(): void;
 }
 
@@ -125,7 +129,8 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	const log = options.log ?? (() => {});
 	const find = createSessionFinder(options.roots);
 	const startedAt = Date.now();
-	const recordListeners = new Map<string, Set<(record: unknown) => void>>();
+	type RecordSubscriber = { record: (record: unknown, length: number) => void; reset?: () => void };
+	const recordListeners = new Map<string, Set<RecordSubscriber>>();
 	const recentMs = options.recentMs ?? 3 * 24 * 60 * 60 * 1000;
 	const maxPerAgent = options.maxPerAgent ?? 8;
 	const clockSkewMs = options.clockSkewMs ?? 5_000;
@@ -210,8 +215,8 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 			await entry.tail.ready;
 			return;
 		}
-		entry.tail = tailJsonl(path, value => {
-			if (recordListeners.size) for (const listener of recordListeners.get(id) ?? []) listener(value);
+		entry.tail = tailJsonl(path, (value, length) => {
+			if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.record(value, length);
 			for (const event of read(value)) {
 				if (event.kind === "title") { state.title = event.title; if (event.named) named.add(id); }
 				else if (event.kind === "working") { state.working = event.working; state.lastActivity = Math.max(state.lastActivity, event.time); }
@@ -235,7 +240,11 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 				}
 			}
 			if (!pendingResponses) changed();
-		}, { intervalMs: options.tailIntervalMs, maxBackfillBytes: options.maxBackfillBytes ?? 2_000_000, onError: error => log(`Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`) });
+		}, {
+			intervalMs: options.tailIntervalMs, maxBackfillBytes: options.maxBackfillBytes ?? 2_000_000,
+			onError: error => log(`Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`),
+			onReset: () => { if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.reset?.(); },
+		});
 		await entry.tail.ready;
 		if (closed) return;
 		backfilling = false;
@@ -332,10 +341,11 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		get: id => tracked.get(id)?.state,
 		onResponse(listener) { responseListeners.add(listener); return () => responseListeners.delete(listener); },
 		onChange(listener) { changeListeners.add(listener); return () => changeListeners.delete(listener); },
-		onRecord(id, listener) {
+		onRecord(id, record, reset) {
 			const listeners = recordListeners.get(id) ?? new Set();
-			listeners.add(listener); recordListeners.set(id, listeners);
-			return () => { listeners.delete(listener); if (!listeners.size) recordListeners.delete(id); };
+			const subscriber = { record, reset };
+			listeners.add(subscriber); recordListeners.set(id, listeners);
+			return () => { listeners.delete(subscriber); if (!listeners.size) recordListeners.delete(id); };
 		},
 		close() {
 			recordListeners.clear();

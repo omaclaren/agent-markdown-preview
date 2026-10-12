@@ -79,51 +79,94 @@ export interface LiveSource {
 }
 
 const LIVE_LEASE_MS = 30_000;
+/** Sessions this process follows live at once; each keeps a bounded projection (see createLiveTurnProjector). */
+const LIVE_SESSION_LIMIT = 4;
+// Records arriving while a backfill reads; more than this means reading the file again.
 const LIVE_PENDING_LIMIT = 10_000;
+const LIVE_PENDING_BYTES = 1024 * 1024;
+const LIVE_READ_ATTEMPTS = 3;
+
+/** Admission for live sources: a few leases at once, and one backfill read at a time. */
+export interface LiveLeases {
+	take(): boolean;
+	give(): void;
+	readonly active: number;
+	exclusive<T>(read: () => Promise<T>): Promise<T>;
+}
+export function createLiveLeases(limit = LIVE_SESSION_LIMIT): LiveLeases {
+	let active = 0, queue: Promise<unknown> = Promise.resolve();
+	return {
+		take: () => active < limit ? (active++, true) : false,
+		give: () => { active = Math.max(0, active - 1); },
+		get active() { return active; },
+		exclusive<T>(read: () => Promise<T>) { const run = queue.then(read, read); queue = run.catch(() => {}); return run; },
+	};
+}
+const processLeases = createLiveLeases();
+/** The browser watch server answers this with "Live Working is busy". */
+class LiveBusyError extends Error { readonly code = "LIVE_BUSY"; }
+
 /**
  * Live recorded activity for one Claude Code session. Nothing is allocated
  * until a live page asks; each request renews a lease, and 30 s without one
- * drops the projection and the record subscription. Exported for tests.
+ * drops the projection and the record subscription. A truncated or replaced
+ * file drops it too: the next request reads the file as it is now, as a new
+ * generation. Exported for tests.
  */
-export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string }, { leaseMs = LIVE_LEASE_MS } = {}): LiveSource {
-	type Lease = { projector: ReturnType<typeof createLiveTurnProjector>; ready: Promise<void>; unsubscribe: () => void; timer?: NodeJS.Timeout };
+export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string }, { leaseMs = LIVE_LEASE_MS, leases = processLeases }: { leaseMs?: number; leases?: LiveLeases } = {}): LiveSource {
+	type Projector = ReturnType<typeof createLiveTurnProjector>;
+	type Lease = { projector?: Projector; ready: Promise<void>; unsubscribe: () => void; timer?: NodeJS.Timeout };
 	let lease: Lease | undefined;
 	const release = () => {
 		if (!lease) return;
 		clearTimeout(lease.timer);
 		lease.unsubscribe();
 		lease = undefined;
+		leases.give();
+	};
+	const start = (): Lease => {
+		if (!leases.take()) throw new LiveBusyError("Live Working is following as many sessions as it allows.");
+		let pending: unknown[] = [], pendingBytes = 0, overflow = false;
+		const created: Lease = { ready: Promise.resolve(), unsubscribe: () => {} };
+		// Subscribe before backfilling; records read twice are ignored by uuid.
+		created.unsubscribe = monitor.onRecord(session.id, (record, length) => {
+			if (created.projector) { created.projector.push(record, Date.now()); return; }
+			if (overflow) return;
+			pendingBytes += length;
+			if (pending.length >= LIVE_PENDING_LIMIT || pendingBytes > LIVE_PENDING_BYTES) { overflow = true; pending = []; return; }
+			pending.push(record);
+		}, () => {
+			// This projection describes the old file: never mix the two.
+			if (lease === created) release();
+		});
+		created.ready = (async () => {
+			for (let attempt = 1; ; attempt++) {
+				const { records, startsMidway } = await leases.exclusive(() => readRecordTail(session.path));
+				// Records dropped while reading are in the file now: read it again.
+				if (overflow && attempt < LIVE_READ_ATTEMPTS) { overflow = false; pendingBytes = 0; continue; }
+				const projector = createLiveTurnProjector("claude", { partialStart: startsMidway });
+				const loadedAt = Date.now();
+				for (const record of records) projector.push(record, loadedAt, true);
+				for (const record of pending.splice(0)) projector.push(record, Date.now());
+				created.projector = projector;
+				return;
+			}
+		})();
+		created.ready.catch(() => { if (lease === created) release(); });
+		return created;
 	};
 	const ensure = async () => {
-		if (!lease) {
-			const projector = createLiveTurnProjector("claude");
-			const pending: unknown[] = [];
-			let following = false;
-			// Subscribe before backfilling; records read twice are ignored by uuid.
-			const unsubscribe = monitor.onRecord(session.id, record => {
-				if (following) projector.push(record, Date.now());
-				else if (pending.length < LIVE_PENDING_LIMIT) pending.push(record);
-			});
-			const created: Lease = { projector, unsubscribe, ready: Promise.resolve() };
-			created.ready = (async () => {
-				try {
-					const { records } = await readRecordTail(session.path);
-					const now = Date.now();
-					for (const record of records) projector.push(record, now);
-				} finally {
-					following = true;
-					for (const record of pending.splice(0)) projector.push(record, Date.now());
-				}
-			})();
-			created.ready.catch(() => { if (lease === created) release(); });
-			lease = created;
+		for (let attempt = 1; ; attempt++) {
+			lease ??= start();
+			const active = lease;
+			clearTimeout(active.timer);
+			active.timer = setTimeout(() => { if (lease === active) release(); }, leaseMs);
+			active.timer.unref();
+			await active.ready;
+			if (lease === active && active.projector) return active.projector;
+			// The file was reset while reading: start again from the file as it is now.
+			if (attempt >= LIVE_READ_ATTEMPTS) throw new Error("The session file keeps changing; try again shortly.");
 		}
-		const active = lease;
-		clearTimeout(active.timer);
-		active.timer = setTimeout(() => { if (lease === active) release(); }, leaseMs);
-		active.timer.unref();
-		await active.ready;
-		return active.projector;
 	};
 	return {
 		current: async () => (await ensure()).current(),
