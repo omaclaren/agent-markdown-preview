@@ -42,7 +42,7 @@
 	"scripts": {
 		"build": "node scripts/build.mjs",
 		"typecheck": "tsc --noEmit",
-		"test": "npm run build && node --test",
+		"test": "npm run build && node --test test/*.test.mjs",
 		"extract": "node scripts/extract-render-core.cjs ../pi-markdown-preview",
 		"prepublishOnly": "npm test"
 	},

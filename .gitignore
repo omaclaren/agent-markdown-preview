@@ -1,2 +1,16 @@
 node_modules/
 dist/
+.DS_Store
+pi-session-*.html
+# Review and design screenshots stay local; README images are listed below.
+screenshots/*
+!screenshots/all-projects.png
+!screenshots/copy-local-path-links.png
+!screenshots/copy-local-path.png
+!screenshots/defaults-palettes.png
+!screenshots/image-preview.png
+!screenshots/index.png
+!screenshots/local-file-actions.png
+!screenshots/preview-dark.png
+!screenshots/preview-light.png
+!screenshots/recorded-images-working-dark.png
