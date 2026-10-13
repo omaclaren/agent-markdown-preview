@@ -212,6 +212,28 @@ test("Live source: only a backfill that starts partway shows activity before its
 	assert.equal(await full.current(), "next");
 });
 
+test("Live source: a Codex rollout backfills then follows; a line delivered twice is ignored by its ordinal", async t => {
+	const f = fixture(t);
+	const dayDir = join(f.roots.codex, "2026", "10", "14");
+	mkdirSync(dayDir, { recursive: true });
+	const path = join(dayDir, "rollout-2026-10-14T00-00-00-00000000-0000-4000-8000-00000000c0de.jsonl");
+	let ordinal = 0;
+	const record = (type, payload) => line({ timestamp: iso(0), ordinal: ordinal++, type, payload });
+	const header = record("session_meta", { id: "thread", cwd: f.cwd }) + record("event_msg", { type: "task_started", turn_id: "t1" });
+	const prompt = record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Run it" }] });
+	writeFileSync(path, header + prompt);
+	const listeners = new Set();
+	const monitor = { onRecord(id, listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+	const source = createLiveSource(monitor, { id: "codex-1", path, agent: "codex" }, { leaseMs: 5_000, leases: createLiveLeases() });
+	t.after(() => source.close());
+	assert.equal(await source.current(), "turn-t1");
+	const call = record("response_item", { type: "custom_tool_call", name: "exec", call_id: "k1", status: "completed", input: "ls" });
+	for (const listener of listeners) { listener(JSON.parse(prompt), 100); listener(JSON.parse(call), 100); listener(JSON.parse(call), 100); }
+	const snapshot = await source.snapshot("turn-t1");
+	assert.deepEqual(snapshot.events.map(e => [e.id, e.kind]), [["o2:0", "prompt"], ["o3:0", "tool"]]);
+	assert.equal(snapshot.events[1].pending, true);
+});
+
 test("--live: a pinned Claude session follows its current turn through the server", { skip, timeout: 60_000 }, async t => {
 	const f = fixture(t);
 	const session = join(f.claudeDir, "00000000-0000-4000-8000-0000000live2.jsonl");
@@ -302,6 +324,56 @@ test("--live: a pinned Pi session follows its current turn through the server", 
 		+ entry("f1", "r1", { role: "assistant", content: text("All green."), stopReason: "stop" }));
 	const done = await waitFor(async () => { const u = await updates(grown.cursor); return /Open its response/.test(u.statusHtml ?? "") ? u : null; }, "completion linked to the retained response", 15_000);
 	assert.match(done.statusHtml, /Turn completed\. <a href="\/\?revision=\d+&amp;identity=/);
+});
+
+test("--live: a pinned Codex session follows its current task through the server", { skip, timeout: 60_000 }, async t => {
+	const f = fixture(t);
+	const dayDir = join(f.roots.codex, "2026", "10", "14");
+	mkdirSync(dayDir, { recursive: true });
+	const session = join(dayDir, "rollout-2026-10-14T00-00-00-00000000-0000-4000-8000-00000000c0d1.jsonl");
+	let ordinal = 0;
+	const record = (type, payload) => line({ timestamp: iso(0), ordinal: ordinal++, type, payload });
+	const message = (role, text, extra = {}) => record("response_item", { type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text }], ...extra });
+	const event = payload => record("event_msg", payload);
+	writeFileSync(session, record("session_meta", { id: "thread", cwd: f.cwd, history_mode: "paginated" })
+		+ event({ type: "task_started", turn_id: "t0" }) + message("user", "Earlier") + message("assistant", "Earlier answer", { phase: "final_answer" })
+		+ event({ type: "task_complete", turn_id: "t0", last_agent_message: "Earlier answer" })
+		+ event({ type: "task_started", turn_id: "t1" }) + message("developer", "SECRET DEVELOPER") + message("user", "Run the checks")
+		+ event({ type: "item_completed", thread_id: "thread", turn_id: "t1", item: { type: "UserMessage", content: [{ type: "text", text: "Run the checks" }] } }));
+	const watch = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["codex"], turnDetails: true, live: true, ...fast });
+	t.after(() => watch.close());
+	const first = await fetch(watch.url);
+	const cookie = first.headers.get("set-cookie").split(";")[0];
+	const live = (await first.text()).match(/data-live-state="([^"]+)"/)?.[1].replaceAll("&amp;", "&").replace(/&format=json$/, "");
+	assert.ok(live, "a pinned Codex session offers Follow activity with live Working");
+	const get = path => fetch(new URL(path, new URL(watch.url).origin), { headers: { cookie }, redirect: "manual" });
+	const redirect = await get(live);
+	assert.equal(redirect.status, 302);
+	const page = redirect.headers.get("location");
+	assert.match(page, /^\/__pi_markdown_preview_live__\/turn-t1\?/, "the running task is the current turn");
+	const text = await (await get(page)).text();
+	assert.match(text, /Run the checks/);
+	assert.equal(text.match(/Run the checks/g).length, 1, "the prompt's event copy is not shown again");
+	assert.doesNotMatch(text, /SECRET/);
+	const updates = cursor => get(`${page.replace("?", "/updates?")}&cursor=${encodeURIComponent(cursor)}`).then(r => r.json());
+	const start = await updates("");
+	const callOrdinal = ordinal;
+	appendFileSync(session, record("response_item", { type: "custom_tool_call", name: "exec", call_id: "k1", status: "completed", input: "npm test" }));
+	const grown = await waitFor(async () => { const u = await updates(start.cursor); return u.upserts?.length ? u : null; }, "the new call");
+	assert.deepEqual(grown.upserts.map(u => u.id), [`o${callOrdinal}:0`]);
+	assert.match(grown.upserts[0].html, /No result recorded yet/);
+	appendFileSync(session, record("response_item", { type: "custom_tool_call_output", call_id: "k1", output: [{ type: "input_text", text: "ok" }] })
+		+ message("assistant", "All green.", { phase: "final_answer" })
+		+ event({ type: "task_complete", turn_id: "t1", last_agent_message: "All green." }));
+	const done = await waitFor(async () => { const u = await updates(grown.cursor); return /Open its response/.test(u.statusHtml ?? "") ? u : null; }, "completion linked to the retained response", 15_000);
+	assert.match(done.statusHtml, /Turn completed\. <a href="\/\?revision=\d+&amp;identity=/);
+	// A compaction task records no final answer: it says so and offers the latest Preview.
+	appendFileSync(session, event({ type: "task_started", turn_id: "t2" }) + record("compacted", { message: "" })
+		+ event({ type: "task_complete", turn_id: "t2", last_agent_message: null }));
+	const maintenance = await waitFor(async () => { const u = await (await get(`${live}&format=json`)).json(); return u.anchor === "turn-t2" && u.status === "completed" ? u : null; }, "the compaction task");
+	const after = await (await get(`${maintenance.liveHref.replace("?", "/updates?")}&cursor=`)).json();
+	assert.match(after.statusHtml, /Turn completed without a final answer\. <a href="\/\?revision=\d+&amp;identity=/);
+	assert.equal(after.completedHref, undefined);
 });
 
 test("--live is offered only where it applies: not for merged views, not without the flag", { skip, timeout: 60_000 }, async t => {

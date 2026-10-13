@@ -107,11 +107,11 @@ const processLeases = createLiveLeases();
 /** The browser watch server answers this with "Live Working is busy". */
 class LiveBusyError extends Error { readonly code = "LIVE_BUSY"; }
 /** Agents whose recorded turns Live can follow (see createLiveTurnProjector). */
-const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi"]);
+const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi", "codex"]);
 const followsLive = (agent: AgentKind | undefined) => agent !== undefined && LIVE_AGENTS.has(agent);
 
 /**
- * Live recorded activity for one Claude Code or Pi session. Nothing is allocated
+ * Live recorded activity for one Claude Code, Pi or Codex session. Nothing is allocated
  * until a live page asks; each request renews a lease, and 30 s without one
  * drops the projection and the record subscription. A truncated or replaced
  * file drops it too: the next request reads the file as it is now, as a new
@@ -186,7 +186,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 interface ViewOptions {
 	cwd: string;
 	turnDetails?: boolean;
-	/** Live recorded activity for this view's single Claude session. */
+	/** Live recorded activity for this view's single session. */
 	live?: LiveSource;
 	style: PreviewStyle;
 	fontSizePx: number;
@@ -295,7 +295,7 @@ interface CommonOptions {
 	cwd: string;
 	/** Opt-in: expose recorded prompts/tool activity for retained responses. */
 	turnDetails?: boolean;
-	/** Opt-in: follow a Claude Code or Pi session's current turn as it is recorded (implies turnDetails). */
+	/** Opt-in: follow a Claude Code, Pi or Codex session's current turn as it is recorded (implies turnDetails). */
 	live?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
@@ -398,7 +398,7 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 		if (!view) { if (fresh) arrivedDuringStart.push(response); }
 		else if (fresh || response.key === view.shownKey) view.show(response);
 	});
-	// Live follows one session: only a pinned Claude Code or Pi session gets it.
+	// Live follows one session: only a pinned Claude Code, Pi or Codex session gets it.
 	const live = options.live && followsLive(pinned?.agent) ? createLiveSource(base.monitor, pinned!) : undefined;
 	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, live);
 	view = started;
