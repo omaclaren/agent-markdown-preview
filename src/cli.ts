@@ -27,7 +27,7 @@ Options:
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --working                       Opt in to Working: recorded prompts, tool output and images (may contain sensitive content).
-  --live                          Also follow a Claude Code session's current turn as it is recorded (implies --working).
+  --live                          Also follow a Claude Code or Pi session's current turn as it is recorded (implies --working).
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
@@ -135,7 +135,7 @@ async function main() {
 	}
 	if (options.turnDetails) process.stdout.write("Working enabled: prompts, tool output and recorded images may contain sensitive content. Only share this link with trusted viewers.\n");
 	else if (!options.file) process.stdout.write("Tip: start with --working to see prompts and activity.\n");
-	if (options.live) process.stdout.write("Live enabled for Claude Code sessions: turn on Follow activity in a session's toolbar to see the current turn live in Working. It shows unfinished tool output as the agent records it.\n");
+	if (options.live) process.stdout.write("Live enabled for Claude Code and Pi sessions: turn on Follow activity in a session's toolbar to see the current turn live in Working. It shows unfinished tool output as the agent records it.\n");
 	process.stdout.write(`Watching ${watch.label}\n${watch.url}\nCtrl+C stops the preview.\n`);
 	const stop = () => { watch.close().finally(() => process.exit(0)); };
 	process.on("SIGINT", stop);

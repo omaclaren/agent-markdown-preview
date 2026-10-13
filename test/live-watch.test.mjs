@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { claudeProjectDirName } from "../dist/sessions.js";
+import { claudeProjectDirName, piSessionDirName } from "../dist/sessions.js";
 import { createLiveLeases, createLiveSource, startResponseWatch, startSessionIndex, styleForMode } from "../dist/watch.js";
 
 const skip = spawnSync(process.env.PANDOC_PATH || "pandoc", ["--version"], { stdio: "ignore" }).error ? "pandoc not installed" : false;
@@ -267,6 +267,41 @@ test("--live: truncating or replacing the session file never mixes the new file 
 	await waitFor(async () => (await get(state)).body.anchor === "other", "the replaced file's own turn");
 	const replaced = await get(new URL((await get(state)).body.liveHref.replace("?", "/updates?") + "&cursor=", watch.url));
 	assert.deepEqual(replaced.body.ids, ["other:0", "oc:0"]);
+});
+
+test("--live: a pinned Pi session follows its current turn through the server", { skip, timeout: 60_000 }, async t => {
+	const f = fixture(t);
+	const piDir = join(f.roots.pi, piSessionDirName(f.cwd));
+	mkdirSync(piDir, { recursive: true });
+	const session = join(piDir, "2026-10-13T00-00-00-000Z_00000000-0000-4000-8000-00000000pi01.jsonl");
+	const entry = (id, parentId, message) => line({ type: "message", id, parentId, timestamp: iso(0), message: { timestamp: Date.now(), ...message } });
+	const text = value => [{ type: "text", text: value }];
+	writeFileSync(session, line({ type: "session", version: 3, id: "s1", timestamp: iso(0), cwd: f.cwd })
+		+ entry("u0", null, { role: "user", content: text("Earlier") })
+		+ entry("f0", "u0", { role: "assistant", content: text("Earlier answer"), stopReason: "stop" })
+		+ entry("u1", "f0", { role: "user", content: text("Run the checks") }));
+	const watch = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["pi"], turnDetails: true, live: true, ...fast });
+	t.after(() => watch.close());
+	const first = await fetch(watch.url);
+	const cookie = first.headers.get("set-cookie").split(";")[0];
+	const live = (await first.text()).match(/data-live-state="([^"]+)"/)?.[1].replaceAll("&amp;", "&").replace(/&format=json$/, "");
+	assert.ok(live, "a pinned Pi session offers Follow activity with live Working");
+	const get = path => fetch(new URL(path, new URL(watch.url).origin), { headers: { cookie }, redirect: "manual" });
+	const redirect = await get(live);
+	assert.equal(redirect.status, 302);
+	const page = redirect.headers.get("location");
+	assert.match(page, /^\/__pi_markdown_preview_live__\/u1\?/);
+	assert.match(await (await get(page)).text(), /Run the checks/);
+	const updates = cursor => get(`${page.replace("?", "/updates?")}&cursor=${encodeURIComponent(cursor)}`).then(r => r.json());
+	const start = await updates("");
+	appendFileSync(session, entry("a1", "u1", { role: "assistant", content: [{ type: "toolCall", id: "k1", name: "bash", arguments: { command: "npm test" } }], stopReason: "toolUse" }));
+	const grown = await waitFor(async () => { const u = await updates(start.cursor); return u.upserts?.length ? u : null; }, "the new call");
+	assert.deepEqual(grown.upserts.map(u => u.id), ["a1:0"]);
+	assert.match(grown.upserts[0].html, /No result recorded yet/);
+	appendFileSync(session, entry("r1", "a1", { role: "toolResult", toolCallId: "k1", toolName: "bash", content: text("ok"), isError: false })
+		+ entry("f1", "r1", { role: "assistant", content: text("All green."), stopReason: "stop" }));
+	const done = await waitFor(async () => { const u = await updates(grown.cursor); return /Open its response/.test(u.statusHtml ?? "") ? u : null; }, "completion linked to the retained response", 15_000);
+	assert.match(done.statusHtml, /Turn completed\. <a href="\/\?revision=\d+&amp;identity=/);
 });
 
 test("--live is offered only where it applies: not for merged views, not without the flag", { skip, timeout: 60_000 }, async t => {

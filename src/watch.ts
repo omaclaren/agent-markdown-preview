@@ -106,15 +106,18 @@ export function createLiveLeases(limit = LIVE_SESSION_LIMIT): LiveLeases {
 const processLeases = createLiveLeases();
 /** The browser watch server answers this with "Live Working is busy". */
 class LiveBusyError extends Error { readonly code = "LIVE_BUSY"; }
+/** Agents whose recorded turns Live can follow (see createLiveTurnProjector). */
+const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi"]);
+const followsLive = (agent: AgentKind | undefined) => agent !== undefined && LIVE_AGENTS.has(agent);
 
 /**
- * Live recorded activity for one Claude Code session. Nothing is allocated
+ * Live recorded activity for one Claude Code or Pi session. Nothing is allocated
  * until a live page asks; each request renews a lease, and 30 s without one
  * drops the projection and the record subscription. A truncated or replaced
  * file drops it too: the next request reads the file as it is now, as a new
  * generation. Exported for tests.
  */
-export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string }, { leaseMs = LIVE_LEASE_MS, leases = processLeases }: { leaseMs?: number; leases?: LiveLeases } = {}): LiveSource {
+export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string; agent?: AgentKind }, { leaseMs = LIVE_LEASE_MS, leases = processLeases }: { leaseMs?: number; leases?: LiveLeases } = {}): LiveSource {
 	type Projector = ReturnType<typeof createLiveTurnProjector>;
 	type Lease = { projector?: Projector; ready: Promise<void>; unsubscribe: () => void; timer?: NodeJS.Timeout };
 	let lease: Lease | undefined;
@@ -149,7 +152,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 					if (attempt >= LIVE_READ_ATTEMPTS) throw new Error("Recorded activity is arriving faster than it can be read; try again shortly.");
 					overflow = false; pendingBytes = 0; continue;
 				}
-				const projector = createLiveTurnProjector("claude", { partialStart: startsMidway });
+				const projector = createLiveTurnProjector(session.agent ?? "claude", { partialStart: startsMidway });
 				const loadedAt = Date.now();
 				for (const record of records) projector.push(record, loadedAt, true);
 				for (const record of pending.splice(0)) projector.push(record, Date.now());
@@ -292,7 +295,7 @@ interface CommonOptions {
 	cwd: string;
 	/** Opt-in: expose recorded prompts/tool activity for retained responses. */
 	turnDetails?: boolean;
-	/** Opt-in: follow a Claude Code session's current turn as it is recorded (implies turnDetails). */
+	/** Opt-in: follow a Claude Code or Pi session's current turn as it is recorded (implies turnDetails). */
 	live?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
@@ -395,8 +398,8 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 		if (!view) { if (fresh) arrivedDuringStart.push(response); }
 		else if (fresh || response.key === view.shownKey) view.show(response);
 	});
-	// Live follows one session: only a pinned Claude Code session gets it.
-	const live = options.live && pinned?.agent === "claude" ? createLiveSource(base.monitor, pinned) : undefined;
+	// Live follows one session: only a pinned Claude Code or Pi session gets it.
+	const live = options.live && followsLive(pinned?.agent) ? createLiveSource(base.monitor, pinned!) : undefined;
 	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, live);
 	view = started;
 	for (const response of arrivedDuringStart.splice(0)) started.show(response);
@@ -446,7 +449,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (!session && !project && !(id === "all" && !allProjects)) return null;
 		const resourceCwd = session?.cwd ?? project?.cwd ?? cwd;
 		const created = session
-			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && session.agent === "claude" ? createLiveSource(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && followsLive(session.agent) ? createLiveSource(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: sessionKey(session) })
