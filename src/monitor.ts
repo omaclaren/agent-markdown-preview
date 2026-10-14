@@ -61,9 +61,10 @@ export interface SessionMonitor {
 	onChange(listener: () => void): () => void;
 	/**
 	 * Raw records of one tracked JSONL session as they are read (Live), with each
-	 * line's length and the byte offset where it starts. A tail that starts again
-	 * (a session tracked again) delivers earlier lines again. `onReset` is called when the file is truncated or replaced:
-	 * records after it belong to a new file. Costs nothing without subscribers.
+	 * line's length and the byte offset where it starts. `onReset` is called when
+	 * the file is truncated or replaced, and when the session's tail stops or
+	 * starts (a session dropped from tracking, or tracked again): records after it
+	 * come from a new reading of the file. Costs nothing without subscribers.
 	 */
 	onRecord(id: string, listener: (record: unknown, length: number, offset?: number) => void, onReset?: () => void): () => void;
 	close(): void;
@@ -132,6 +133,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	const startedAt = Date.now();
 	type RecordSubscriber = { record: (record: unknown, length: number, offset?: number) => void; reset?: () => void };
 	const recordListeners = new Map<string, Set<RecordSubscriber>>();
+	const resetRecords = (id: string) => { if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.reset?.(); };
 	const recentMs = options.recentMs ?? 3 * 24 * 60 * 60 * 1000;
 	const maxPerAgent = options.maxPerAgent ?? 8;
 	const clockSkewMs = options.clockSkewMs ?? 5_000;
@@ -157,6 +159,8 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		const read = createSessionReader(agent, path);
 		const entry = { state, tail: null as unknown as JsonlTail, initial };
 		tracked.set(id, entry);
+		// Subscribers from before this tail described another reading of the file.
+		resetRecords(id);
 		let backfilling = true;
 		// Hold tail notifications until the deeper history is merged, so recovered
 		// answers are delivered before any newer answers already found in the tail.
@@ -244,7 +248,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 		}, {
 			intervalMs: options.tailIntervalMs, maxBackfillBytes: options.maxBackfillBytes ?? 2_000_000,
 			onError: error => log(`Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`),
-			onReset: () => { if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.reset?.(); },
+			onReset: () => resetRecords(id),
 		});
 		await entry.tail.ready;
 		if (closed) return;
@@ -320,6 +324,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 			for (const [id, entry] of tracked) {
 				if (keep.has(id)) continue;
 				entry.tail.close(); tracked.delete(id); named.delete(id);
+				resetRecords(id);
 				seenBeforeDrop.set(entry.state.path, Math.max(seenBeforeDrop.get(entry.state.path) ?? -Infinity, ...entry.state.history.map(r => r.time)));
 				dropped = true;
 			}

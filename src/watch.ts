@@ -133,9 +133,9 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 		let pending: { record: unknown; offset?: number }[] = [], pendingBytes = 0, overflow = false, end = Infinity;
 		const created: Lease = { ready: Promise.resolve(), unsubscribe: () => {} };
 		// Subscribe before backfilling; records read twice are ignored by their ids. A
-		// line that starts before the backfill's end is not newer than it: a lagging or
-		// restarted tail can deliver an earlier line, which must never be projected
-		// after newer ones.
+		// line that starts before the backfill's end is not newer than it: a lagging
+		// tail can deliver an earlier line, which must never be projected after newer
+		// ones. A tail that stops or starts again resets the subscription (see onRecord).
 		const older = (offset?: number) => offset !== undefined && offset < end;
 		created.unsubscribe = monitor.onRecord(session.id, (record, length, offset) => {
 			if (created.projector) { if (!older(offset)) created.projector.push(record, Date.now()); return; }

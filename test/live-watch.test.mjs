@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import vm from "node:vm";
 import { claudeProjectDirName, piSessionDirName } from "../dist/sessions.js";
 import { createLiveLeases, createLiveSource, startResponseWatch, startSessionIndex, styleForMode } from "../dist/watch.js";
 import { tailJsonl } from "../dist/tail.js";
+import { createSessionMonitor } from "../dist/monitor.js";
 import { readRecordTail } from "../dist/shared/read-turn-details.js";
 
 const skip = spawnSync(process.env.PANDOC_PATH || "pandoc", ["--version"], { stdio: "ignore" }).error ? "pandoc not installed" : false;
@@ -308,6 +309,44 @@ test("Live source (Codex): lines older than the backfill are never projected aft
 	deliver({ record: JSON.parse(usage), length: usage.length, offset: size }, { record: JSON.parse(end), length: end.length, offset: size + Buffer.byteLength(usage) });
 	snapshot = await source.snapshot(anchor);
 	assert.deepEqual([snapshot.status, snapshot.finalKey], ["completed", "codex:X"]);
+});
+
+test("Live source: a session dropped from tracking and tracked again is read again, whatever happened to its file meanwhile", async t => {
+	for (const change of ["append", "truncate", "replace"]) {
+		const f = fixture(t);
+		const day = join(f.roots.codex, "2026", "10", "14");
+		mkdirSync(day, { recursive: true });
+		const path = join(day, "rollout-2026-10-14T00-00-00-00000000-0000-4000-8000-00000000d001.jsonl");
+		const other = join(day, "rollout-2026-10-14T00-00-01-00000000-0000-4000-8000-00000000d002.jsonl");
+		let ordinal = 0;
+		const record = (type, payload) => line({ timestamp: iso(0), ordinal: ordinal++, type, payload });
+		const task = (turn, text) => record("event_msg", { type: "task_started", turn_id: turn }) + record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text }] });
+		const header = () => record("session_meta", { id: "thread", cwd: f.cwd });
+		const stamp = Date.now() / 1000;
+		// A long first file, so the replacement's lines start before the old read's end.
+		writeFileSync(path, header() + task("old", "Old ".repeat(4000)));
+		utimesSync(path, stamp, stamp);
+		const monitor = createSessionMonitor({ cwd: f.cwd, roots: { codex: f.roots.codex }, agents: ["codex"], maxPerAgent: 1, rescanMs: 30, tailIntervalMs: 15 });
+		t.after(() => monitor.close());
+		await monitor.ready;
+		const state = monitor.sessions().find(s => s.path === path);
+		const source = createLiveSource(monitor, state, { leaseMs: 30_000, leases: createLiveLeases() });
+		t.after(() => source.close());
+		assert.equal(await source.current(), "turn-old");
+		const generation = (await source.snapshot("turn-old")).generation;
+		// A newer session takes the only slot; then this file changes while it is not followed.
+		writeFileSync(other, header() + task("other", "Other session"));
+		utimesSync(other, stamp + 1, stamp + 1);
+		await waitFor(() => !monitor.get(state.id), "the session dropped from tracking");
+		if (change === "append") appendFileSync(path, task("replacement", "Replacement prompt"));
+		else if (change === "truncate") writeFileSync(path, header() + task("replacement", "Replacement prompt"));
+		else { const next = join(f.base, "next.jsonl"); writeFileSync(next, header() + task("replacement", "Replacement prompt")); renameSync(next, path); }
+		utimesSync(path, stamp + 2, stamp + 2);
+		await waitFor(() => monitor.get(state.id), "the session tracked again");
+		const current = await waitFor(async () => (await source.current()) === "turn-replacement" ? "turn-replacement" : null, `the ${change}d file's current turn`, 5_000);
+		assert.notEqual((await source.snapshot(current)).generation, generation, `${change}: a new reading, never mixed into the old one`);
+		source.close(); monitor.close();
+	}
 });
 
 test("--live: a pinned Claude session follows its current turn through the server", { skip, timeout: 60_000 }, async t => {
