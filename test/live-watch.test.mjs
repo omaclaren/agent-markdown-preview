@@ -8,6 +8,8 @@ import v8 from "node:v8";
 import vm from "node:vm";
 import { claudeProjectDirName, piSessionDirName } from "../dist/sessions.js";
 import { createLiveLeases, createLiveSource, startResponseWatch, startSessionIndex, styleForMode } from "../dist/watch.js";
+import { tailJsonl } from "../dist/tail.js";
+import { readRecordTail } from "../dist/shared/read-turn-details.js";
 
 const skip = spawnSync(process.env.PANDOC_PATH || "pandoc", ["--version"], { stdio: "ignore" }).error ? "pandoc not installed" : false;
 const line = entry => JSON.stringify(entry) + "\n";
@@ -232,6 +234,80 @@ test("Live source: a Codex rollout backfills then follows; a line delivered twic
 	const snapshot = await source.snapshot("turn-t1");
 	assert.deepEqual(snapshot.events.map(e => [e.id, e.kind]), [["o2:0", "prompt"], ["o3:0", "tool"]]);
 	assert.equal(snapshot.events[1].pending, true);
+});
+
+test("Tail and backfill report exact byte offsets across multibyte text, partial lines and a bounded start", async t => {
+	const f = fixture(t);
+	const path = join(f.base, "offsets.jsonl");
+	const lines = [{ n: 0, text: "plain" }, { n: 1, text: "ünïcødé ✓ 🙂" }, { n: 2, text: "x".repeat(50) }, { n: 3, text: "partial ✓" }].map(e => JSON.stringify(e) + "\n");
+	const at = n => Buffer.byteLength(lines.slice(0, n).join(""));
+	const split = Buffer.byteLength(lines[3].slice(0, 18));
+	writeFileSync(path, Buffer.concat([Buffer.from(lines.slice(0, 3).join("")), Buffer.from(lines[3]).subarray(0, split)]));
+	const seen = [];
+	const tail = tailJsonl(path, (entry, length, offset) => seen.push([entry.n, offset]), { intervalMs: 20 });
+	t.after(() => tail.close());
+	await tail.ready;
+	assert.deepEqual(seen, [[0, 0], [1, at(1)], [2, at(2)]]);
+	appendFileSync(path, Buffer.from(lines[3]).subarray(split));
+	await tail.poll();
+	assert.deepEqual(seen.at(-1), [3, at(3)], "a line completed later keeps its starting offset, even split inside a character");
+	const read = await readRecordTail(path);
+	assert.equal(read.end, at(4));
+	assert.deepEqual(read.records.map(e => e.n), [0, 1, 2, 3]);
+	appendFileSync(path, '{"n":4');
+	assert.equal((await readRecordTail(path)).end, at(4), "a line still being written starts at the end of the read");
+	// A bounded start skips its first, partial line and keeps absolute offsets.
+	const bounded = [];
+	const cut = tailJsonl(path, (entry, length, offset) => bounded.push([entry.n, offset]), { intervalMs: 20, maxBackfillBytes: at(4) + 6 - (at(2) + 5) });
+	t.after(() => cut.close());
+	await cut.ready;
+	assert.deepEqual(bounded, [[3, at(3)]]);
+});
+
+test("Live source (Codex): lines older than the backfill are never projected after it, while reading or later", async t => {
+	const f = fixture(t);
+	const dayDir = join(f.roots.codex, "2026", "10", "14");
+	mkdirSync(dayDir, { recursive: true });
+	const path = join(dayDir, "rollout-2026-10-14T00-00-00-00000000-0000-4000-8000-00000000c0d2.jsonl");
+	// An earlier task Y, then task X whose start and own context fall before an 8 MiB read.
+	let ordinal = 0, size = 0;
+	const chunks = [], at = {};
+	const add = (key, type, payload) => {
+		const text = line({ timestamp: iso(0), ordinal: ordinal++, type, payload });
+		if (key) at[key] = { record: JSON.parse(text), length: text.length, offset: size };
+		chunks.push(text); size += Buffer.byteLength(text);
+	};
+	add("yStart", "event_msg", { type: "task_started", turn_id: "Y" });
+	add("yUsage", "token_usage_record", { turn_id: "Y", usage: {} });
+	add("yEnd", "event_msg", { type: "task_complete", turn_id: "Y", last_agent_message: "Y answer" });
+	add("xStart", "event_msg", { type: "task_started", turn_id: "X" });
+	add("xContext", "turn_context", { turn_id: "X", cwd: f.cwd });
+	const padding = "p".repeat(2000);
+	for (let i = 0; i < 4500; i++) add(null, "event_msg", { type: "token_count", info: padding });
+	add("prompt", "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "X prompt" }] });
+	writeFileSync(path, chunks.join(""));
+	assert.ok(size - at.xContext.offset > 8 * 1024 * 1024 && size - at.prompt.offset < 8 * 1024 * 1024, "X's start and context fall before the bounded read; its prompt is inside");
+	const listeners = new Set();
+	const monitor = { onRecord(id, listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+	const deliver = (...lines) => { for (const { record, length, offset } of lines) for (const listener of listeners) listener(record, length, offset); };
+	// A lagging tail delivers Y's last lines while the backfill reads, and again afterwards.
+	const real = createLiveLeases();
+	const leases = { take: () => real.take(), give: () => real.give(), get active() { return real.active; }, exclusive: read => real.exclusive(async () => { deliver(at.yUsage, at.yEnd); return read(); }) };
+	const source = createLiveSource(monitor, { id: "codex-overlap", path, agent: "codex" }, { leaseMs: 5_000, leases });
+	t.after(() => source.close());
+	const anchor = await source.current();
+	assert.equal(anchor, `o${at.prompt.record.ordinal}`, "the bounded read starts inside X, after its start");
+	let snapshot = await source.snapshot(anchor);
+	assert.deepEqual([snapshot.status, snapshot.finalKey, snapshot.events.map(e => e.text)], ["running", undefined, ["X prompt"]]);
+	deliver(at.yUsage, at.yEnd);
+	snapshot = await source.snapshot(anchor);
+	assert.deepEqual([snapshot.status, snapshot.finalKey], ["running", undefined], "earlier lines delivered later are not projected either");
+	// Newer lines are: X's own usage names the partial turn, and X's end completes it.
+	const usage = line({ timestamp: iso(0), ordinal: ordinal++, type: "token_usage_record", payload: { turn_id: "X", usage: {} } });
+	const end = line({ timestamp: iso(0), ordinal: ordinal++, type: "event_msg", payload: { type: "task_complete", turn_id: "X", last_agent_message: "X answer" } });
+	deliver({ record: JSON.parse(usage), length: usage.length, offset: size }, { record: JSON.parse(end), length: end.length, offset: size + Buffer.byteLength(usage) });
+	snapshot = await source.snapshot(anchor);
+	assert.deepEqual([snapshot.status, snapshot.finalKey], ["completed", "codex:X"]);
 });
 
 test("--live: a pinned Claude session follows its current turn through the server", { skip, timeout: 60_000 }, async t => {

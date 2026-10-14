@@ -130,32 +130,37 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 	};
 	const start = (): Lease => {
 		if (!leases.take()) throw new LiveBusyError("Live Working is following as many sessions as it allows.");
-		let pending: unknown[] = [], pendingBytes = 0, overflow = false;
+		let pending: { record: unknown; offset?: number }[] = [], pendingBytes = 0, overflow = false, end = Infinity;
 		const created: Lease = { ready: Promise.resolve(), unsubscribe: () => {} };
-		// Subscribe before backfilling; records read twice are ignored by uuid.
-		created.unsubscribe = monitor.onRecord(session.id, (record, length) => {
-			if (created.projector) { created.projector.push(record, Date.now()); return; }
+		// Subscribe before backfilling; records read twice are ignored by their ids. A
+		// line that starts before the backfill's end is not newer than it: a lagging or
+		// restarted tail can deliver an earlier line, which must never be projected
+		// after newer ones.
+		const older = (offset?: number) => offset !== undefined && offset < end;
+		created.unsubscribe = monitor.onRecord(session.id, (record, length, offset) => {
+			if (created.projector) { if (!older(offset)) created.projector.push(record, Date.now()); return; }
 			if (overflow) return;
 			pendingBytes += length;
 			if (pending.length >= LIVE_PENDING_LIMIT || pendingBytes > LIVE_PENDING_BYTES) { overflow = true; pending = []; return; }
-			pending.push(record);
+			pending.push({ record, offset });
 		}, () => {
 			// This projection describes the old file: never mix the two.
 			if (lease === created) release();
 		});
 		created.ready = (async () => {
 			for (let attempt = 1; ; attempt++) {
-				const { records, startsMidway } = await leases.exclusive(() => readRecordTail(session.path));
+				const read = await leases.exclusive(() => readRecordTail(session.path));
 				// Records dropped while reading are in the file now: read it again. Never
 				// accept a read that missed records; a later request starts over.
 				if (overflow) {
 					if (attempt >= LIVE_READ_ATTEMPTS) throw new Error("Recorded activity is arriving faster than it can be read; try again shortly.");
 					overflow = false; pendingBytes = 0; continue;
 				}
-				const projector = createLiveTurnProjector(session.agent ?? "claude", { partialStart: startsMidway });
+				const projector = createLiveTurnProjector(session.agent ?? "claude", { partialStart: read.startsMidway });
 				const loadedAt = Date.now();
-				for (const record of records) projector.push(record, loadedAt, true);
-				for (const record of pending.splice(0)) projector.push(record, Date.now());
+				for (const record of read.records) projector.push(record, loadedAt, true);
+				end = read.end;
+				for (const { record, offset } of pending.splice(0)) if (!older(offset)) projector.push(record, Date.now());
 				created.projector = projector;
 				return;
 			}

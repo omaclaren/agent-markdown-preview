@@ -61,10 +61,11 @@ export interface SessionMonitor {
 	onChange(listener: () => void): () => void;
 	/**
 	 * Raw records of one tracked JSONL session as they are read (Live), with each
-	 * line's length. `onReset` is called when the file is truncated or replaced:
+	 * line's length and the byte offset where it starts. A tail that starts again
+	 * (a session tracked again) delivers earlier lines again. `onReset` is called when the file is truncated or replaced:
 	 * records after it belong to a new file. Costs nothing without subscribers.
 	 */
-	onRecord(id: string, listener: (record: unknown, length: number) => void, onReset?: () => void): () => void;
+	onRecord(id: string, listener: (record: unknown, length: number, offset?: number) => void, onReset?: () => void): () => void;
 	close(): void;
 }
 
@@ -129,7 +130,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 	const log = options.log ?? (() => {});
 	const find = createSessionFinder(options.roots);
 	const startedAt = Date.now();
-	type RecordSubscriber = { record: (record: unknown, length: number) => void; reset?: () => void };
+	type RecordSubscriber = { record: (record: unknown, length: number, offset?: number) => void; reset?: () => void };
 	const recordListeners = new Map<string, Set<RecordSubscriber>>();
 	const recentMs = options.recentMs ?? 3 * 24 * 60 * 60 * 1000;
 	const maxPerAgent = options.maxPerAgent ?? 8;
@@ -215,8 +216,8 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 			await entry.tail.ready;
 			return;
 		}
-		entry.tail = tailJsonl(path, (value, length) => {
-			if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.record(value, length);
+		entry.tail = tailJsonl(path, (value, length, offset) => {
+			if (recordListeners.size) for (const subscriber of recordListeners.get(id) ?? []) subscriber.record(value, length, offset);
 			for (const event of read(value)) {
 				if (event.kind === "title") { state.title = event.title; if (event.named) named.add(id); }
 				else if (event.kind === "working") { state.working = event.working; state.lastActivity = Math.max(state.lastActivity, event.time); }
