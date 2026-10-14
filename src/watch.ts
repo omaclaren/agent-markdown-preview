@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { basename, dirname, resolve } from "node:path";
 import { ALL_PROJECTS_SESSION_LIMIT, createSessionMonitor, type SessionMonitor, type SessionState } from "./monitor.js";
 import { localDocumentRenderer } from "./linked-documents.js";
-import { createOpenCodeStore, openCodeSessionId, openCodeSessionPath } from "./opencode.js";
+import { createOpenCodeStore, openCodeSessionId, openCodeSessionPath, type OpenCodeLiveEvent, type OpenCodeLiveTurn, type OpenCodeStore } from "./opencode.js";
 import {
 	buildBrowserHtmlFromPandocFragment, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX,
 	normalizePreviewFontSizePx, prepareFilePreview, renderPreviewHtmlDocument, type PreviewStyle,
@@ -106,12 +106,15 @@ export function createLiveLeases(limit = LIVE_SESSION_LIMIT): LiveLeases {
 const processLeases = createLiveLeases();
 /** The browser watch server answers this with "Live Working is busy". */
 class LiveBusyError extends Error { readonly code = "LIVE_BUSY"; }
-/** Agents whose recorded turns Live can follow (see createLiveTurnProjector). */
-const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi", "codex"]);
+/** Agents whose recorded turns Live can follow (createLiveTurnProjector; OpenCode: createOpenCodeLiveSource). */
+const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi", "codex", "opencode"]);
 const followsLive = (agent: AgentKind | undefined) => agent !== undefined && LIVE_AGENTS.has(agent);
+const liveSourceFor = (monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string; agent?: AgentKind }) =>
+	session.agent === "opencode" ? createOpenCodeLiveSource(session) : createLiveSource(monitor, session);
 
 /**
- * Live recorded activity for one Claude Code, Pi or Codex session. Nothing is allocated
+ * Live recorded activity for one Claude Code, Pi or Codex session (OpenCode: see
+ * createOpenCodeLiveSource). Nothing is allocated
  * until a live page asks; each request renews a lease, and 30 s without one
  * drops the projection and the record subscription. A truncated or replaced
  * file drops it too: the next request reads the file as it is now, as a new
@@ -184,6 +187,94 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 	return {
 		current: async () => (await ensure()).current(),
 		snapshot: async anchor => (await ensure()).snapshot(anchor),
+		close: release,
+	};
+}
+
+/** What the page compares to decide whether a card changed: everything a card shows. */
+function liveCardVersion(event: OpenCodeLiveEvent) {
+	const images = (event.images ?? []).map(value => { const image = value as Record<string, unknown>; return image.unavailable ?? `${image.mimeType}:${image.byteLength}:${(image.data as string | undefined)?.length}`; });
+	const source = JSON.stringify([event.kind, event.label, event.text, event.callId ?? "", event.questionAnswers ?? "", images, event.pending === true]);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < source.length; i++) { hash ^= source.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; }
+	return hash.toString(36);
+}
+
+/**
+ * Live recorded activity for one OpenCode v2 session. OpenCode updates its rows in
+ * place instead of appending, so a request re-reads the turn when the session's
+ * revision moves and compares its cards by id: only changed cards carry the new
+ * sequence. A card that disappears (a revert deletes rows) starts a new generation,
+ * which the page resyncs to. Leases as createLiveSource. Exported for tests.
+ */
+export function createOpenCodeLiveSource(session: { path: string }, { leaseMs = LIVE_LEASE_MS, leases = processLeases, openStore = createOpenCodeStore }: { leaseMs?: number; leases?: LiveLeases; openStore?: (database: string) => Pick<OpenCodeStore, "live" | "close"> } = {}): LiveSource {
+	type View = { revision: string; generation: string; sequence: number; versions: Map<string, string>; changed: Map<string, number>; summary: string; updatedAt: number; loaded: boolean; snapshot?: object };
+	type Lease = { store: Pick<OpenCodeStore, "live" | "close">; views: Map<string, View>; current?: { revision: string; anchor?: string }; timer?: NodeJS.Timeout };
+	const database = session.path.slice(0, session.path.lastIndexOf("#"));
+	let lease: Lease | undefined;
+	const release = () => {
+		if (!lease) return;
+		clearTimeout(lease.timer);
+		lease.store.close();
+		lease = undefined;
+		leases.give();
+	};
+	const renew = () => {
+		if (!lease) {
+			if (!leases.take()) throw new LiveBusyError("Live Working is following as many sessions as it allows.");
+			lease = { store: openStore(database), views: new Map() };
+		}
+		const active = lease;
+		clearTimeout(active.timer);
+		active.timer = setTimeout(() => { if (lease === active) release(); }, leaseMs);
+		active.timer.unref();
+		return active;
+	};
+	const apply = (active: Lease, turn: OpenCodeLiveTurn, revision: string) => {
+		const existing = active.views.get(turn.anchor);
+		const ids = new Set(turn.events.map(event => event.id));
+		const view: View = existing && [...existing.versions.keys()].every(id => ids.has(id)) ? existing
+			: { revision, generation: Math.random().toString(36).slice(2, 10), sequence: 0, versions: new Map(), changed: new Map(), summary: "", updatedAt: Date.now(), loaded: !existing };
+		view.revision = revision;
+		const next = view.sequence + 1;
+		let moved = false;
+		for (const event of turn.events) {
+			const version = liveCardVersion(event);
+			if (view.versions.get(event.id) !== version) { view.versions.set(event.id, version); view.changed.set(event.id, next); moved = true; }
+		}
+		const summary = JSON.stringify([turn.status, turn.finalKey ?? null, turn.newerAnchor ?? null, turn.notices]);
+		if (summary !== view.summary) { view.summary = summary; moved = true; }
+		if (moved) {
+			view.sequence = next;
+			// Activity read when the page first asked is Loaded; anything after is Updated.
+			if (view.snapshot) { view.loaded = false; view.updatedAt = Date.now(); }
+		}
+		view.snapshot = {
+			generation: view.generation, anchor: turn.anchor, sourceAgent: "opencode", status: turn.status, finalKey: turn.finalKey,
+			sequence: view.sequence, updatedAt: view.updatedAt, loaded: view.loaded, omitted: 0, notices: turn.notices,
+			events: turn.events.map(event => ({ ...event, changed: view.changed.get(event.id) ?? 0, version: view.versions.get(event.id) })),
+			...(turn.newerAnchor ? { newerAnchor: turn.newerAnchor } : {}),
+		};
+		active.views.delete(turn.anchor);
+		active.views.set(turn.anchor, view);
+		while (active.views.size > 4) active.views.delete(active.views.keys().next().value!);
+		return view.snapshot;
+	};
+	const read = async (anchor: string | undefined, signal = new AbortController().signal) => {
+		const active = renew();
+		const view = anchor === undefined ? undefined : active.views.get(anchor);
+		const since = anchor === undefined ? active.current?.revision : view?.revision;
+		const result = await leases.exclusive(() => active.store.live(session.path, anchor, since, signal));
+		if (lease !== active) return { current: undefined, snapshot: undefined };
+		if (!result) { active.current = undefined; active.views.clear(); return { current: undefined, snapshot: undefined }; }
+		if (result.unchanged) return { current: active.current?.anchor, snapshot: view?.snapshot };
+		active.current = { revision: result.revision, anchor: result.current };
+		if (!result.turn) { if (anchor !== undefined) active.views.delete(anchor); return { current: result.current, snapshot: undefined }; }
+		return { current: result.current, snapshot: apply(active, result.turn, result.revision) };
+	};
+	return {
+		current: async signal => (await read(undefined, signal)).current,
+		snapshot: async (anchor, signal) => (await read(anchor, signal)).snapshot,
 		close: release,
 	};
 }
@@ -300,7 +391,7 @@ interface CommonOptions {
 	cwd: string;
 	/** Opt-in: expose recorded prompts/tool activity for retained responses. */
 	turnDetails?: boolean;
-	/** Opt-in: follow a Claude Code, Pi or Codex session's current turn as it is recorded (implies turnDetails). */
+	/** Opt-in: follow a session's current turn as it is recorded (implies turnDetails). */
 	live?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
@@ -403,8 +494,8 @@ export async function startResponseWatch(options: CommonOptions & { sessionPath?
 		if (!view) { if (fresh) arrivedDuringStart.push(response); }
 		else if (fresh || response.key === view.shownKey) view.show(response);
 	});
-	// Live follows one session: only a pinned Claude Code, Pi or Codex session gets it.
-	const live = options.live && followsLive(pinned?.agent) ? createLiveSource(base.monitor, pinned!) : undefined;
+	// Live follows one session: only a pinned session gets it.
+	const live = options.live && followsLive(pinned?.agent) ? liveSourceFor(base.monitor, pinned!) : undefined;
 	const started = await mergedView(base.monitor, base, options, label, pinned ? `session|${pinned.path}` : `${base.cwd}|merged`, live);
 	view = started;
 	for (const response of arrivedDuringStart.splice(0)) started.show(response);
@@ -454,7 +545,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (!session && !project && !(id === "all" && !allProjects)) return null;
 		const resourceCwd = session?.cwd ?? project?.cwd ?? cwd;
 		const created = session
-			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && followsLive(session.agent) ? createLiveSource(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && followsLive(session.agent) ? liveSourceFor(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: sessionKey(session) })

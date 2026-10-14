@@ -64,6 +64,12 @@ Working inherits its response's palette and text size. Each view remembers its r
 - The database is opened read-only, with no OpenCode process, server, export or migration command. Short snapshot reads include committed WAL updates, and polling every 300 ms detects in-place message edits and waits for v2 turns to settle.
 - At most 20 answers are kept, chosen from the newest 256 completed candidates, with a 2 MiB text limit per answer. These are the stored transcript answers, not a reconstruction of the model's compacted context or staged undo state.
 - The old pre-SQLite `storage/session`, `storage/message` and `storage/part` JSON directories and JSON exports are not read.
+- **Live (v2 sessions only):**
+  - A turn runs from the first prompt after an idle marker to the next idle marker; prompts sent while it runs belong to it.
+  - The idle marker's outcome ends the turn: succeeded, interrupted or failed. A completed turn links to the same answer the history keeps for it; one without a text answer returns to the latest Preview.
+  - Compaction and other maintenance that ends in an idle marker without a prompt is not a turn. Queued input that OpenCode has not yet admitted is not shown.
+  - OpenCode updates its rows in place, so Live re-reads the turn, up to its latest 250 rows, whenever the session's event counter changes, and updates only the cards whose content changed. A revert deletes rows; Live then redraws the turn, and a reverted turn is no longer available.
+  - Live shows only what is in the database: text blocks once recorded whole, and tool output when the tool finishes. It does not fetch streaming output from OpenCode's server. A subagent runs in its own child session, which has its own turns.
 
 ## Themes
 

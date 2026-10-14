@@ -14,6 +14,8 @@ interface Database {
 }
 const record = (value: unknown): Row | null => value && typeof value === "object" && !Array.isArray(value) ? value as Row : null;
 const finiteTime = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
+/** A call card added at `from` whose result is not recorded yet. */
+const pending = (events: Row[], from: number) => { if (events[from]?.kind === "tool") events[from].pending = true; };
 const terminal = new Set(["stop", "length", "content-filter"]);
 export const isOpenCodeSessionId = (value: string) => /^ses_[a-zA-Z0-9]+$/.test(value);
 /** Stable across v1 -> v2 migration; not a filesystem path or a browser URL. */
@@ -52,8 +54,35 @@ export interface OpenCodeStore {
 	list(cwd?: string): Promise<SessionFile[]>;
 	snapshot(path: string): Promise<OpenCodeSnapshot | null>;
 	turnDetails(response: AgentResponse, signal: AbortSignal): Promise<ReturnType<typeof createTurnDetails>["result"]>;
+	/** The recorded activity of one v2 turn for Live, or null when the session has none. */
+	live(sessionPath: string, anchor: string | undefined, since: string | undefined, signal: AbortSignal): Promise<OpenCodeLiveRead | null>;
 	close(): void;
 }
+
+export type OpenCodeLiveEvent = ReturnType<typeof createTurnDetails>["result"]["events"][number] & { id: string; pending?: boolean };
+export interface OpenCodeLiveTurn {
+	/** The turn's first authored prompt row. */
+	anchor: string;
+	status: "running" | "completed" | "interrupted" | "error";
+	/** Response key of the turn's answer, as the history reader keys it. */
+	finalKey?: string;
+	/** A later authored turn exists. */
+	newerAnchor?: string;
+	events: OpenCodeLiveEvent[];
+	notices: string[];
+}
+export interface OpenCodeLiveRead {
+	/** Changes whenever this session's recorded rows or lifecycle change. */
+	revision: string;
+	/** Anchor of the latest authored turn, if any. */
+	current?: string;
+	/** The requested (or current) turn; absent when unchanged since `since` or no longer recorded. */
+	turn?: OpenCodeLiveTurn;
+	unchanged?: true;
+}
+
+/** Rows read per Live turn; a longer turn shows its latest activity. */
+const LIVE_ROWS = 250;
 
 async function openReadOnly(path: string): Promise<Database> {
 	let db: Database;
@@ -309,6 +338,106 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				}
 				if (!t.result.events.some(e => e.kind === "prompt")) t.note("The input prompt is not available in this recorded portion of the turn.");
 				return t.result;
+			} finally { db.exec("ROLLBACK"); }
+		},
+		async live(sessionPath, anchor, since, signal) {
+			const id = openCodeSessionId(sessionPath);
+			const db = id ? await connect() : null;
+			if (!id || !db || !hasV2()) return null;
+			// One snapshot: the revision and the rows it describes must agree.
+			db.exec("BEGIN");
+			try {
+				const session = db.prepare(`SELECT id,${optional("session_v2", "revert")},${optional("session_v2", "time_suspended")} FROM session_v2 WHERE id=?`).get(id);
+				if (!session) return null;
+				// OpenCode updates assistant rows in place under the same seq, so neither the
+				// highest seq nor the row count reveals every change. Its per-session event
+				// counter does, and moves in the same transaction as the rows. Without it,
+				// fall back to a coarser fingerprint of the rows.
+				const counter = tables.has("event_sequence") ? db.prepare("SELECT seq FROM event_sequence WHERE aggregate_id=?").get(id)?.seq : undefined;
+				const shape = db.prepare(counter === undefined
+					? "SELECT MAX(seq) AS seq,COUNT(*) AS rows,MAX(time_updated) AS updated,SUM(length(CAST(data AS BLOB))) AS bytes FROM session_message WHERE session_id=?"
+					: "SELECT MAX(seq) AS seq FROM session_message WHERE session_id=?").get(id);
+				const revision = JSON.stringify([counter ?? null, session.revert ?? null, session.time_suspended ?? null, shape?.seq ?? null, shape?.rows ?? null, shape?.updated ?? null, shape?.bytes ?? null]);
+				if (since === revision) return { revision, unchanged: true };
+				// A turn runs from the first authored prompt after an idle marker to the next
+				// idle marker; prompts sent while it runs belong to it. Maintenance (compaction,
+				// a resume, a user shell command) can end in an idle marker with no prompt and
+				// is not a turn. Queued input stays out of session_message until it is promoted.
+				const turnStart = (seq: number) => {
+					const previous = db.prepare("SELECT MAX(seq) AS seq FROM session_message WHERE session_id=? AND type='idle' AND seq<?").get(id, seq)?.seq;
+					return db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' AND seq>? ORDER BY seq LIMIT 1").get(id, typeof previous === "number" ? previous : Number.MIN_SAFE_INTEGER);
+				};
+				const latest = db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' ORDER BY seq DESC LIMIT 1").get(id);
+				const current = latest ? turnStart(latest.seq) : undefined;
+				const target = anchor === undefined ? current : db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND id=? AND type='user'").get(id, anchor);
+				// A reverted turn's rows are deleted; its anchor no longer identifies a turn.
+				if (!target || (anchor !== undefined && turnStart(target.seq)?.id !== target.id)) return { revision, current: current?.id };
+				const end = db.prepare(`SELECT seq,${field("outcome")} AS outcome FROM session_message WHERE session_id=? AND type='idle' AND seq>? ORDER BY seq LIMIT 1`).get(id, target.seq);
+				const rows = db.prepare("SELECT id,type,seq FROM session_message WHERE session_id=? AND seq>=? AND seq<=? ORDER BY seq DESC LIMIT ?")
+					.all(id, target.seq, end?.seq ?? Number.MAX_SAFE_INTEGER, LIVE_ROWS + 1).reverse();
+				const t = createTurnDetails();
+				if (rows.length > LIVE_ROWS) { rows.shift(); t.note("This turn is longer than Live reads; earlier activity is omitted."); }
+				const recorded = db.prepare(`SELECT CASE WHEN length(CAST(data AS BLOB))<=? THEN data ELSE NULL END AS data FROM session_message WHERE session_id=? AND id=?`);
+				const events: OpenCodeLiveEvent[] = [];
+				let bytes = 0;
+				// Each card keeps one id across re-reads: OpenCode only appends parts to a
+				// row and updates them in place, so row id + part position is stable.
+				const collect = (key: string, from: number) => t.result.events.slice(from).forEach((event, i) => events.push({ ...event, id: `${key}.${i}` }));
+				for (const row of rows) {
+					signal.throwIfAborted();
+					if (row.type === "compaction") { t.note("Context was compacted during this turn."); continue; }
+					if (!["user", "assistant", "shell"].includes(row.type)) continue;
+					if (bytes >= TURN_READ_BYTES) { t.note("The read-size limit was reached; remaining activity is omitted."); break; }
+					const text = recorded.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, row.id)?.data;
+					if (typeof text !== "string") { t.note("A recorded message exceeded the record or remaining read-size limit and was omitted."); continue; }
+					bytes += Buffer.byteLength(text);
+					let data: Row;
+					try { data = JSON.parse(text); } catch { t.note("An invalid recorded message was omitted."); continue; }
+					if (row.type === "shell") {
+						const from = t.result.events.length;
+						t.add("tool", "User shell command", data.command);
+						if (data.status === "running") pending(t.result.events, from);
+						else t.add("result", "Shell output", data.output);
+						collect(row.id, from);
+						continue;
+					}
+					if (Array.isArray(data.files) && data.files.length) t.note("Prompt file attachments are omitted.");
+					const parts = Array.isArray(data.content) ? data.content : [];
+					if (row.type === "user" && typeof data.text === "string" && !parts.length) { const from = t.result.events.length; t.content(data.text, "user"); collect(row.id, from); }
+					parts.forEach((p: Row, position: number) => {
+						if (!p || p.ignored || p.synthetic) return;
+						const from = t.result.events.length;
+						if (p.type === "tool") {
+							const callId = p.callID ?? p.callId ?? p.id;
+							// While its input streams, a tool has no recorded arguments yet.
+							const input = p.state?.input ?? p.input;
+							t.add("tool", `Tool: ${String(p.tool ?? p.name ?? "")}`, input && typeof input === "object" ? JSON.stringify(input, null, 2) : "", callId);
+							if (p.state?.status === "completed" || p.state?.status === "error") {
+								const error = typeof p.state.error === "string" ? p.state.error : p.state.error?.message;
+								const content = Array.isArray(p.state.content) ? p.state.content : undefined;
+								const output = p.state.output ?? content ?? error;
+								const attachments = [...(output === content ? [] : content ?? []), ...(Array.isArray(p.state.attachments) ? p.state.attachments : [])];
+								t.toolResult(`Tool result${p.state.status === "error" ? " (error)" : ""}`, output, callId, attachments);
+							} else pending(t.result.events, from);
+						} else t.content([p], row.type);
+						collect(`${row.id}.${position}`, from);
+					});
+				}
+				let status: OpenCodeLiveTurn["status"] = "running", finalKey: string | undefined;
+				if (end) {
+					status = end.outcome === "succeeded" ? "completed" : end.outcome === "interrupted" ? "interrupted" : "error";
+					// The same answer the history reader keeps for this turn: the latest completed
+					// assistant row before the idle marker, if it has text.
+					const answer = status === "completed" ? db.prepare(`SELECT id,data FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq DESC LIMIT 1`).get(id, target.seq, end.seq) : undefined;
+					let parsed: unknown = null;
+					try { parsed = answer && typeof answer.data === "string" ? { ...JSON.parse(answer.data), id: answer.id, type: "assistant" } : null; } catch { /* No answer to link. */ }
+					finalKey = readOpenCodeResponse(parsed, sessionPath)?.key;
+				}
+				if (!events.some(e => e.kind === "prompt")) t.note("The input prompt is not available in this recorded portion of the turn.");
+				return {
+					revision, current: current?.id,
+					turn: { anchor: target.id, status, finalKey, ...(current && current.id !== target.id && current.seq > target.seq ? { newerAnchor: current.id } : {}), events, notices: t.result.notices },
+				};
 			} finally { db.exec("ROLLBACK"); }
 		},
 		close() { closed = true; reset(); },

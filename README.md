@@ -34,7 +34,7 @@ In the project directory where you are working with an agent, run:
 agent-markdown-preview --live
 ```
 
-This opens an index of the project's recent agent sessions. Open a session to get a tab that shows each response when the agent finishes its turn, with earlier responses a click away. **Working**, beside each response, shows the prompts, tool calls and results that led to it. For Claude Code, Pi and Codex sessions, turn on **Follow activity** in the toolbar (or press Ctrl+Alt+A) to watch each turn in Working as it runs; when the turn finishes, the page returns to the response. With Follow activity off, the tab updates after each turn.
+This opens an index of the project's recent agent sessions. Open a session to get a tab that shows each response when the agent finishes its turn, with earlier responses a click away. **Working**, beside each response, shows the prompts, tool calls and results that led to it. Turn on **Follow activity** in the toolbar (or press Ctrl+Alt+A) to watch each turn in Working as it runs; when the turn finishes, the page returns to the response. With Follow activity off, the tab updates after each turn.
 
 ![Live: a turn in progress, with a tool call still waiting for its result (synthetic session)](screenshots/live.png)
 
@@ -69,7 +69,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 
 Working shows a response's recorded prompts, progress, any exposed reasoning, and its tool calls and results. Prompts start expanded and activity starts folded. Commands, file reads and edits have readable views, with the recorded JSON available, and recorded images can be enlarged. Claude's questions show their options and the answers given. **Ctrl+Alt+P** and **Ctrl+Alt+W** (Control+Option on macOS) switch between Preview and Working. Working is available in session previews, not file previews.
 
-With `--live` and **Follow activity** on, the page moves to Working when a turn starts and back to Preview when it ends. If you have scrolled up or moved to another page, it leaves you there. Updates arrive as the agent writes each record, not token by token, so a tool call shows "No result recorded yet" until its result is recorded. Live covers Claude Code, Pi and Codex. A Codex task that ends without a final answer, such as a compaction, returns to the latest Preview. A reverted Codex thread continues in a new session log, which the index lists separately.
+With `--live` and **Follow activity** on, the page moves to Working when a turn starts and back to Preview when it ends. If you have scrolled up or moved to another page, it leaves you there. Updates arrive as the agent records them, not token by token, so a tool call shows "No result recorded yet" until its result is recorded. OpenCode records a text block once it is complete and a tool's output when the tool finishes, so those appear whole. A Codex task that ends without a final answer, such as a compaction, returns to the latest Preview. A reverted Codex thread continues in a new session log, which the index lists separately.
 
 **Privacy:** prompts, tool output and recorded images can contain secrets, and nothing is redacted. Share these links only with people you trust. Working uses its own remembered credentials, so links you shared from an ordinary preview don't gain this access. Stopping the `--live` or `--working` process revokes it.
 
