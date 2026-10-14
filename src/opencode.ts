@@ -414,8 +414,13 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				const target = anchor === undefined ? current : db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND id=? AND type='user'").get(id, anchor);
 				// A reverted turn's rows are deleted; its anchor no longer identifies a turn.
 				if (!target || (anchor !== undefined && turnStart(target.seq)?.id !== target.id)) return { revision, database, current: current?.id };
-				const end = db.prepare(`SELECT seq,${field("outcome")} AS outcome FROM session_message WHERE session_id=? AND type='idle' AND seq>? ORDER BY seq LIMIT 1`).get(id, target.seq);
-				const rows = db.prepare("SELECT id,type,seq FROM session_message WHERE session_id=? AND seq>=? AND seq<=? ORDER BY seq DESC LIMIT ?")
+				// The turn ends at its idle marker, or at an imported answer, which has none.
+				const idle = db.prepare(`SELECT seq,${field("outcome")} AS outcome FROM session_message WHERE session_id=? AND type='idle' AND seq>? ORDER BY seq LIMIT 1`).get(id, target.seq);
+				let end: { seq: number; outcome: unknown; answer?: string } | undefined = idle ? { seq: idle.seq, outcome: idle.outcome } : undefined;
+				if (imported) for (const row of db.prepare(`SELECT id,seq FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq LIMIT ?`).all(id, target.seq, idle?.seq ?? Number.MAX_SAFE_INTEGER, CANDIDATES)) {
+					if (imported.get(id, row.id)) { end = { seq: row.seq, outcome: "succeeded", answer: row.id }; break; }
+				}
+				const rows = db.prepare("SELECT id,type,seq,length(CAST(data AS BLOB)) AS bytes FROM session_message WHERE session_id=? AND seq>=? AND seq<=? ORDER BY seq DESC LIMIT ?")
 					.all(id, target.seq, end?.seq ?? Number.MAX_SAFE_INTEGER, LIVE_ROWS + 1).reverse();
 				// Collect every card from the rows read, then keep the latest ones (below).
 				const t = createTurnDetails([], { eventLimit: Number.MAX_SAFE_INTEGER, totalLimit: Number.MAX_SAFE_INTEGER });
@@ -423,9 +428,18 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				if (unclear) t.note("OpenCode has a staged revert that Live can't place; this activity may be removed.");
 				else if (boundary !== undefined && target.seq >= boundary) t.note("OpenCode has staged a revert that removes this turn.");
 				else if (boundary !== undefined && (end?.seq ?? rows.at(-1)?.seq ?? target.seq) >= boundary) t.note("OpenCode has staged a revert of this turn's later activity.");
+				// The read budget goes to the newest rows first; older rows beyond it are omitted.
+				const admitted = new Set<string>();
+				let bytes = 0;
+				for (let i = rows.length - 1; i >= 0; i--) {
+					const row = rows[i];
+					if (!["user", "assistant", "shell"].includes(row.type) || row.bytes > TURN_RECORD_BYTES) continue;
+					if (bytes + row.bytes > TURN_READ_BYTES) { t.note("The read-size limit was reached; earlier activity is omitted."); break; }
+					bytes += row.bytes;
+					admitted.add(row.id);
+				}
 				const recorded = db.prepare(`SELECT CASE WHEN length(CAST(data AS BLOB))<=? THEN data ELSE NULL END AS data FROM session_message WHERE session_id=? AND id=?`);
 				const events: OpenCodeLiveEvent[] = [];
-				let bytes = 0;
 				// A card's id is its slot: the row, the part's position in it, and the card's
 				// index within that part. OpenCode updates parts in place (and can replace a
 				// row's content); a slot whose content changes is redrawn, never merged.
@@ -434,10 +448,10 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 					signal.throwIfAborted();
 					if (row.type === "compaction") { t.note("Context was compacted during this turn."); continue; }
 					if (!["user", "assistant", "shell"].includes(row.type)) continue;
-					if (bytes >= TURN_READ_BYTES) { t.note("The read-size limit was reached; remaining activity is omitted."); break; }
-					const text = recorded.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, row.id)?.data;
-					if (typeof text !== "string") { t.note("A recorded message exceeded the record or remaining read-size limit and was omitted."); continue; }
-					bytes += Buffer.byteLength(text);
+					if (row.bytes > TURN_RECORD_BYTES) { t.note("A recorded message exceeded the record size limit and was omitted."); continue; }
+					if (!admitted.has(row.id)) continue;
+					const text = recorded.get(TURN_RECORD_BYTES, id, row.id)?.data;
+					if (typeof text !== "string") { t.note("A recorded message exceeded the record size limit and was omitted."); continue; }
 					let data: Row | null = null;
 					try { data = record(JSON.parse(text)); } catch { /* Reported below. */ }
 					if (!data) { t.note("An invalid recorded message was omitted."); continue; }
@@ -483,7 +497,9 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 					status = end.outcome === "succeeded" ? "completed" : end.outcome === "interrupted" ? "interrupted" : "error";
 					// The same answer the history reader keeps for this turn: the latest completed
 					// assistant row before the idle marker, with its text read under the same bound.
-					const answer = status === "completed" ? db.prepare(`SELECT id,${field("finish")} AS finish FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq DESC LIMIT 1`).get(id, target.seq, end.seq) : undefined;
+					const answer = status !== "completed" ? undefined
+						: end.answer ? db.prepare(`SELECT id,${field("finish")} AS finish FROM session_message WHERE session_id=? AND id=?`).get(id, end.answer)
+						: db.prepare(`SELECT id,${field("finish")} AS finish FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq DESC LIMIT 1`).get(id, target.seq, end.seq);
 					if (answer) {
 						const { texts, oversized } = answerTexts(db, id, answer.id);
 						if (oversized) answerUnavailable = true;

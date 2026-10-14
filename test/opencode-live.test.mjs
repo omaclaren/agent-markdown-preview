@@ -396,6 +396,45 @@ test("OpenCode Live: an answer imported from v1 closes its exchange; a new nativ
 	const turn = await live.snapshot("native_u");
 	assert.deepEqual(turn.events.filter(e => e.kind === "prompt").map(e => e.text), ["Native prompt"]);
 	assert.equal(turn.events.some(e => /Imported answer/.test(e.text)), false);
+	// The imported exchange ends at its own answer, before, during and after the native turn.
+	const imported = () => live.snapshot("mig_u");
+	const during = await imported();
+	assert.equal(during.status, "completed");
+	assert.equal(during.finalKey, "opencode:mig_a");
+	assert.deepEqual(during.events.filter(e => e.kind === "prompt").map(e => e.text), ["Imported prompt"]);
+	assert.equal(during.newerAnchor, "native_u");
+	f.update("ses_mig", "native_a", f.answer("Native answer"));
+	f.row("ses_mig", "native_i", 5, "idle", { outcome: "succeeded" });
+	const after = await imported();
+	assert.equal(after.finalKey, "opencode:mig_a", "never the later native answer");
+	assert.equal(after.events.some(e => /Native/.test(e.text)), false);
+	assert.equal((await live.snapshot("native_u")).finalKey, "opencode:native_a");
+
+	// An imported exchange on its own is complete, not running.
+	f.session("ses_alone");
+	const lone = f.answer("Lone answer");
+	f.db.prepare("INSERT INTO message VALUES (?,?,?,?,?)").run("alone_a", "ses_alone", lone.time.created, lone.time.completed, JSON.stringify({ role: "assistant", ...lone }));
+	f.row("ses_alone", "alone_u", 1, "user", { text: "Lone prompt" });
+	f.row("ses_alone", "alone_a", 2, "assistant", lone);
+	const alone = f.source("ses_alone");
+	t.after(() => alone.close());
+	const single = await alone.snapshot("alone_u");
+	assert.equal(single.status, "completed");
+	assert.equal(single.finalKey, "opencode:alone_a");
+});
+
+test("OpenCode Live: the read budget keeps the newest rows that fit, not only the oldest", async t => {
+	const f = fixture(t);
+	f.session("ses_bigrows");
+	f.row("ses_bigrows", "br_u", 1, "user", { text: "Go" });
+	for (let i = 0; i < 10; i++) f.row("ses_bigrows", `br_a${i}`, 2 + i, "assistant", f.step([{ type: "text", text: "p".repeat(750_000) }], { finish: "tool-calls" }));
+	f.row("ses_bigrows", "br_new", 20, "assistant", f.step([{ type: "text", text: "n".repeat(900_000) }]));
+	const live = f.source("ses_bigrows");
+	t.after(() => live.close());
+	const snapshot = await live.snapshot("br_u");
+	assert.equal(snapshot.events.at(-1).id, "br_new.0.0", "the newest row fits the record cap and is shown");
+	assert.ok(snapshot.notices.includes("The read-size limit was reached; earlier activity is omitted."));
+	assert.equal(snapshot.events.some(e => e.id === "br_a0.0.0"), false, "the oldest rows give way");
 });
 
 test("OpenCode Live: native shell output, malformed rows and replaced content slots", async t => {
