@@ -3,7 +3,7 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentResponse, SessionFile } from "./sessions.js";
-import { createTurnDetails } from "./shared/turn-details.js";
+import { createTurnDetails, TURN_EVENT_LIMIT, TURN_TOTAL_LIMIT } from "./shared/turn-details.js";
 import { TURN_READ_BYTES, TURN_RECORD_BYTES } from "./shared/read-turn-details.js";
 
 type Row = Record<string, any>;
@@ -14,6 +14,13 @@ interface Database {
 }
 const record = (value: unknown): Row | null => value && typeof value === "object" && !Array.isArray(value) ? value as Row : null;
 const finiteTime = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
+/** v2 records a shell's output as { output, cursor, size, truncated }; v1 as text. */
+const shellOutput = (t: { note(message: string): void }, value: unknown) => {
+	const output = record(value);
+	if (!output) return value;
+	if (output.truncated) t.note("OpenCode recorded only part of a shell command's output.");
+	return output.output;
+};
 /** A call card added at `from` whose result is not recorded yet. */
 const pending = (events: Row[], from: number) => { if (events[from]?.kind === "tool") events[from].pending = true; };
 const terminal = new Set(["stop", "length", "content-filter"]);
@@ -63,17 +70,23 @@ export type OpenCodeLiveEvent = ReturnType<typeof createTurnDetails>["result"]["
 export interface OpenCodeLiveTurn {
 	/** The turn's first authored prompt row. */
 	anchor: string;
-	status: "running" | "completed" | "interrupted" | "error";
+	status: "running" | "completed" | "incomplete" | "interrupted" | "error";
 	/** Response key of the turn's answer, as the history reader keys it. */
 	finalKey?: string;
+	/** The turn recorded an answer larger than Preview keeps. */
+	answerUnavailable?: boolean;
 	/** A later authored turn exists. */
 	newerAnchor?: string;
+	/** The latest cards; `omitted` earlier ones in the rows read are not shown. */
 	events: OpenCodeLiveEvent[];
+	omitted: number;
 	notices: string[];
 }
 export interface OpenCodeLiveRead {
-	/** Changes whenever this session's recorded rows or lifecycle change. */
+	/** Changes whenever this session's recorded rows or lifecycle change, or the database is replaced. */
 	revision: string;
+	/** The database file and opening the revision belongs to. */
+	database: string;
 	/** Anchor of the latest authored turn, if any. */
 	current?: string;
 	/** The requested (or current) turn; absent when unchanged since `since` or no longer recorded. */
@@ -113,7 +126,7 @@ const completed = `${field("time.completed")} IS NOT NULL AND ${field("finish")}
 
 export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 	const path = resolve(databasePath);
-	let database: Database | null = null, inode = "", closed = false;
+	let database: Database | null = null, inode = "", closed = false, opens = 0;
 	let opening: Promise<Database | null> | null = null;
 	let tables = new Set<string>();
 	const columns = new Map<string, Set<string>>();
@@ -137,6 +150,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				if (closed) { opened.close(); return null; }
 				database = opened;
 				inode = key;
+				opens++;
 			}
 			// Discover newly migrated schemas too, not just the tables at startup.
 			tables = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
@@ -151,6 +165,20 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 	const optional = (table: string, name: string) => columns.get(table)?.has(name) ? name : `NULL AS ${name}`;
 	const sessionColumns = (table: string) => ["id", "title", "directory", "parent_id", "time_created", "time_updated",
 		...(["time_archived", "time_suspended", "fork_session_id"] as const).map(name => optional(table, name))].join(",");
+
+	/** An answer row's text parts as Preview keeps them; none, and `oversized`, beyond MAX_TEXT_BYTES. */
+	function answerTexts(db: Database, id: string, rowId: string): { texts: Row[]; oversized: boolean } {
+		const parts = `WITH parts AS (
+			SELECT CASE WHEN p.type='object' THEN p.value ELSE '{}' END AS body, CAST(p.key AS INTEGER) AS position
+			FROM session_message m, json_each(m.data,'$.content') p WHERE m.session_id=? AND m.id=?
+		), texts AS (
+			SELECT json_extract(body,'$.text') AS text,position FROM parts WHERE json_extract(body,'$.type')='text'
+			AND json_type(body,'$.text')='text' AND COALESCE(json_extract(body,'$.ignored'),0)=0 AND COALESCE(json_extract(body,'$.synthetic'),0)=0
+		)`;
+		const bytes = db.prepare(`${parts} SELECT COALESCE(SUM(length(CAST(text AS BLOB))+2),0) AS bytes FROM texts`).get(id, rowId)?.bytes ?? 0;
+		if (bytes > MAX_TEXT_BYTES) return { texts: [], oversized: true };
+		return { texts: db.prepare(`${parts} SELECT text FROM texts ORDER BY position`).all(id, rowId), oversized: false };
+	}
 
 	function readSnapshot(db: Database, id: string): OpenCodeSnapshot | null {
 		const v2 = hasV2() ? db.prepare(`SELECT ${sessionColumns("session_v2")} FROM session_v2 WHERE id=?`).get(id) : undefined;
@@ -175,13 +203,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 					if (!idle || usedTurns.has(idle.seq)) continue;
 					usedTurns.add(idle.seq);
 				}
-				const texts = db.prepare(`WITH parts AS (
-					SELECT CASE WHEN p.type='object' THEN p.value ELSE '{}' END AS body, CAST(p.key AS INTEGER) AS position
-					FROM session_message m, json_each(m.data,'$.content') p WHERE m.session_id=? AND m.id=?
-				), texts AS (
-					SELECT json_extract(body,'$.text') AS text,position FROM parts WHERE json_extract(body,'$.type')='text'
-					AND json_type(body,'$.text')='text' AND COALESCE(json_extract(body,'$.ignored'),0)=0 AND COALESCE(json_extract(body,'$.synthetic'),0)=0
-				) SELECT text FROM texts WHERE (SELECT SUM(length(CAST(text AS BLOB))+2) FROM texts)<=? ORDER BY position`).all(id, row.id, MAX_TEXT_BYTES);
+				const { texts } = answerTexts(db, id, row.id);
 				addResponse(row, texts, !imported && !forkedHistory ? idle?.time_created : undefined);
 				if (history.length === HISTORY) break;
 			}
@@ -300,11 +322,12 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 					const recorded = messageData.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, row.id)?.data;
 					if (typeof recorded !== "string") { t.note("A recorded message exceeded the record or remaining read-size limit and was omitted."); continue; }
 					bytes += Buffer.byteLength(recorded);
-					let data: Row;
-					try { data = JSON.parse(recorded); } catch { t.note("An invalid recorded message was omitted."); continue; }
+					let data: Row | null = null;
+					try { data = record(JSON.parse(recorded)); } catch { /* Reported below. */ }
+					if (!data) { t.note("An invalid recorded message was omitted."); continue; }
 					if (row.type === "shell") {
 						t.add("tool", "User shell command", data.command);
-						t.add("result", "Shell output", data.output);
+						t.add("result", "Shell output", shellOutput(t, data.output));
 						continue;
 					}
 					if (Array.isArray(data.files) && data.files.length) t.note("Prompt file attachments are omitted.");
@@ -344,6 +367,8 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 			const id = openCodeSessionId(sessionPath);
 			const db = id ? await connect() : null;
 			if (!id || !db || !hasV2()) return null;
+			// Which file, and which opening of it: a replaced database can repeat every value inside it.
+			const database = `${inode}:${opens}`;
 			// One snapshot: the revision and the rows it describes must agree.
 			db.exec("BEGIN");
 			try {
@@ -352,36 +377,58 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				// OpenCode updates assistant rows in place under the same seq, so neither the
 				// highest seq nor the row count reveals every change. Its per-session event
 				// counter does, and moves in the same transaction as the rows. Without it,
-				// fall back to a coarser fingerprint of the rows.
+				// SQLite's data_version moves on every commit by another connection (database-
+				// wide, so it re-reads more often than needed, but never misses a change).
 				const counter = tables.has("event_sequence") ? db.prepare("SELECT seq FROM event_sequence WHERE aggregate_id=?").get(id)?.seq : undefined;
-				const shape = db.prepare(counter === undefined
-					? "SELECT MAX(seq) AS seq,COUNT(*) AS rows,MAX(time_updated) AS updated,SUM(length(CAST(data AS BLOB))) AS bytes FROM session_message WHERE session_id=?"
-					: "SELECT MAX(seq) AS seq FROM session_message WHERE session_id=?").get(id);
-				const revision = JSON.stringify([counter ?? null, session.revert ?? null, session.time_suspended ?? null, shape?.seq ?? null, shape?.rows ?? null, shape?.updated ?? null, shape?.bytes ?? null]);
-				if (since === revision) return { revision, unchanged: true };
+				const top = db.prepare("SELECT MAX(seq) AS seq FROM session_message WHERE session_id=?").get(id)?.seq ?? null;
+				const commits = counter === undefined ? db.prepare("PRAGMA data_version").get()?.data_version ?? null : null;
+				const revision = JSON.stringify([database, counter ?? null, commits, session.revert ?? null, session.time_suspended ?? null, top]);
+				if (since === revision) return { revision, database, unchanged: true };
+				// A staged revert leaves its rows in place until it is committed. Activity from
+				// its message on is not the current turn; if the boundary can't be found, Live
+				// does not pick a current turn at all.
+				let boundary: number | undefined, unclear = false;
+				if (session.revert != null) {
+					let staged: Row | null = null;
+					try { staged = record(typeof session.revert === "string" ? JSON.parse(session.revert) : session.revert); } catch { /* Unclear. */ }
+					const at = typeof staged?.messageID === "string" ? db.prepare("SELECT seq FROM session_message WHERE session_id=? AND id=?").get(id, staged.messageID)?.seq : undefined;
+					if (typeof at === "number") boundary = at; else unclear = true;
+				}
 				// A turn runs from the first authored prompt after an idle marker to the next
-				// idle marker; prompts sent while it runs belong to it. Maintenance (compaction,
-				// a resume, a user shell command) can end in an idle marker with no prompt and
-				// is not a turn. Queued input stays out of session_message until it is promoted.
+				// idle marker; prompts sent while it runs belong to it. Answers imported from
+				// v1 have no idle marker but close their exchange all the same. Maintenance
+				// (compaction, a resume, a user shell command) can end in an idle marker with
+				// no prompt and is not a turn. Queued input stays out of session_message until
+				// it is promoted.
+				const imported = hasV1() ? db.prepare(`SELECT id FROM message WHERE session_id=? AND id=? AND ${completed}`) : undefined;
 				const turnStart = (seq: number) => {
-					const previous = db.prepare("SELECT MAX(seq) AS seq FROM session_message WHERE session_id=? AND type='idle' AND seq<?").get(id, seq)?.seq;
-					return db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' AND seq>? ORDER BY seq LIMIT 1").get(id, typeof previous === "number" ? previous : Number.MIN_SAFE_INTEGER);
+					const idle = db.prepare("SELECT MAX(seq) AS seq FROM session_message WHERE session_id=? AND type='idle' AND seq<?").get(id, seq)?.seq;
+					let floor = typeof idle === "number" ? idle : Number.MIN_SAFE_INTEGER;
+					if (imported) for (const row of db.prepare(`SELECT id,seq FROM session_message WHERE session_id=? AND type='assistant' AND seq<? AND seq>? AND ${completed} ORDER BY seq DESC LIMIT ?`).all(id, seq, floor, CANDIDATES)) {
+						if (imported.get(id, row.id)) { floor = row.seq; break; }
+					}
+					return db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' AND seq>? ORDER BY seq LIMIT 1").get(id, floor);
 				};
-				const latest = db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' ORDER BY seq DESC LIMIT 1").get(id);
+				const latest = unclear ? undefined : db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND type='user' AND seq<? ORDER BY seq DESC LIMIT 1").get(id, boundary ?? Number.MAX_SAFE_INTEGER);
 				const current = latest ? turnStart(latest.seq) : undefined;
 				const target = anchor === undefined ? current : db.prepare("SELECT id,seq FROM session_message WHERE session_id=? AND id=? AND type='user'").get(id, anchor);
 				// A reverted turn's rows are deleted; its anchor no longer identifies a turn.
-				if (!target || (anchor !== undefined && turnStart(target.seq)?.id !== target.id)) return { revision, current: current?.id };
+				if (!target || (anchor !== undefined && turnStart(target.seq)?.id !== target.id)) return { revision, database, current: current?.id };
 				const end = db.prepare(`SELECT seq,${field("outcome")} AS outcome FROM session_message WHERE session_id=? AND type='idle' AND seq>? ORDER BY seq LIMIT 1`).get(id, target.seq);
 				const rows = db.prepare("SELECT id,type,seq FROM session_message WHERE session_id=? AND seq>=? AND seq<=? ORDER BY seq DESC LIMIT ?")
 					.all(id, target.seq, end?.seq ?? Number.MAX_SAFE_INTEGER, LIVE_ROWS + 1).reverse();
-				const t = createTurnDetails();
+				// Collect every card from the rows read, then keep the latest ones (below).
+				const t = createTurnDetails([], { eventLimit: Number.MAX_SAFE_INTEGER, totalLimit: Number.MAX_SAFE_INTEGER });
 				if (rows.length > LIVE_ROWS) { rows.shift(); t.note("This turn is longer than Live reads; earlier activity is omitted."); }
+				if (unclear) t.note("OpenCode has a staged revert that Live can't place; this activity may be removed.");
+				else if (boundary !== undefined && target.seq >= boundary) t.note("OpenCode has staged a revert that removes this turn.");
+				else if (boundary !== undefined && (end?.seq ?? rows.at(-1)?.seq ?? target.seq) >= boundary) t.note("OpenCode has staged a revert of this turn's later activity.");
 				const recorded = db.prepare(`SELECT CASE WHEN length(CAST(data AS BLOB))<=? THEN data ELSE NULL END AS data FROM session_message WHERE session_id=? AND id=?`);
 				const events: OpenCodeLiveEvent[] = [];
 				let bytes = 0;
-				// Each card keeps one id across re-reads: OpenCode only appends parts to a
-				// row and updates them in place, so row id + part position is stable.
+				// A card's id is its slot: the row, the part's position in it, and the card's
+				// index within that part. OpenCode updates parts in place (and can replace a
+				// row's content); a slot whose content changes is redrawn, never merged.
 				const collect = (key: string, from: number) => t.result.events.slice(from).forEach((event, i) => events.push({ ...event, id: `${key}.${i}` }));
 				for (const row of rows) {
 					signal.throwIfAborted();
@@ -391,13 +438,14 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 					const text = recorded.get(Math.min(TURN_RECORD_BYTES, TURN_READ_BYTES - bytes), id, row.id)?.data;
 					if (typeof text !== "string") { t.note("A recorded message exceeded the record or remaining read-size limit and was omitted."); continue; }
 					bytes += Buffer.byteLength(text);
-					let data: Row;
-					try { data = JSON.parse(text); } catch { t.note("An invalid recorded message was omitted."); continue; }
+					let data: Row | null = null;
+					try { data = record(JSON.parse(text)); } catch { /* Reported below. */ }
+					if (!data) { t.note("An invalid recorded message was omitted."); continue; }
 					if (row.type === "shell") {
 						const from = t.result.events.length;
 						t.add("tool", "User shell command", data.command);
 						if (data.status === "running") pending(t.result.events, from);
-						else t.add("result", "Shell output", data.output);
+						else t.add("result", "Shell output", shellOutput(t, data.output));
 						collect(row.id, from);
 						continue;
 					}
@@ -423,20 +471,35 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 						collect(`${row.id}.${position}`, from);
 					});
 				}
-				let status: OpenCodeLiveTurn["status"] = "running", finalKey: string | undefined;
+				// The latest cards within the usual display limits; the rest are counted, not shown.
+				let kept = 0, size = 0;
+				while (kept < events.length && kept < TURN_EVENT_LIMIT) {
+					const cost = events[events.length - 1 - kept].text.length;
+					if (size + cost > TURN_TOTAL_LIMIT) break;
+					size += cost; kept++;
+				}
+				let status: OpenCodeLiveTurn["status"] = "running", finalKey: string | undefined, answerUnavailable = false;
 				if (end) {
 					status = end.outcome === "succeeded" ? "completed" : end.outcome === "interrupted" ? "interrupted" : "error";
 					// The same answer the history reader keeps for this turn: the latest completed
-					// assistant row before the idle marker, if it has text.
-					const answer = status === "completed" ? db.prepare(`SELECT id,data FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq DESC LIMIT 1`).get(id, target.seq, end.seq) : undefined;
-					let parsed: unknown = null;
-					try { parsed = answer && typeof answer.data === "string" ? { ...JSON.parse(answer.data), id: answer.id, type: "assistant" } : null; } catch { /* No answer to link. */ }
-					finalKey = readOpenCodeResponse(parsed, sessionPath)?.key;
+					// assistant row before the idle marker, with its text read under the same bound.
+					const answer = status === "completed" ? db.prepare(`SELECT id,${field("finish")} AS finish FROM session_message WHERE session_id=? AND type='assistant' AND seq>? AND seq<? AND ${completed} ORDER BY seq DESC LIMIT 1`).get(id, target.seq, end.seq) : undefined;
+					if (answer) {
+						const { texts, oversized } = answerTexts(db, id, answer.id);
+						if (oversized) answerUnavailable = true;
+						else if (texts.some(part => typeof part.text === "string" && part.text.trim())) finalKey = `opencode:${answer.id}`;
+						// The idle outcome describes the run; the answer's own finish says it was cut short.
+						if (answer.finish === "length") status = "incomplete";
+					}
 				}
 				if (!events.some(e => e.kind === "prompt")) t.note("The input prompt is not available in this recorded portion of the turn.");
 				return {
-					revision, current: current?.id,
-					turn: { anchor: target.id, status, finalKey, ...(current && current.id !== target.id && current.seq > target.seq ? { newerAnchor: current.id } : {}), events, notices: t.result.notices },
+					revision, database, current: current?.id,
+					turn: {
+						anchor: target.id, status, finalKey, ...(answerUnavailable ? { answerUnavailable } : {}),
+						...(current && current.id !== target.id && current.seq > target.seq ? { newerAnchor: current.id } : {}),
+						events: events.slice(events.length - kept), omitted: events.length - kept, notices: t.result.notices,
+					},
 				};
 			} finally { db.exec("ROLLBACK"); }
 		},

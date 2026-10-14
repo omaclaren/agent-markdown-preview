@@ -65,11 +65,12 @@ Working inherits its response's palette and text size. Each view remembers its r
 - At most 20 answers are kept, chosen from the newest 256 completed candidates, with a 2 MiB text limit per answer. These are the stored transcript answers, not a reconstruction of the model's compacted context or staged undo state.
 - The old pre-SQLite `storage/session`, `storage/message` and `storage/part` JSON directories and JSON exports are not read.
 - **Live (v2 sessions only):**
-  - A turn runs from the first prompt after an idle marker to the next idle marker; prompts sent while it runs belong to it.
-  - The idle marker's outcome ends the turn: succeeded, interrupted or failed. A completed turn links to the same answer the history keeps for it; one without a text answer returns to the latest Preview.
+  - A turn runs from the first prompt after an idle marker to the next idle marker; prompts sent while it runs belong to it. An answer imported from v1, which has no idle marker, also closes its exchange.
+  - The idle marker's outcome ends the turn: succeeded, interrupted or failed. A completed turn links to the same answer the history keeps for it; one without a text answer returns to the latest Preview. An answer that stopped at the model's output limit is shown as incomplete, with a link to the partial answer. An answer larger than Preview keeps (2 MiB of text) is reported as too large, with a link back to Preview.
   - Compaction and other maintenance that ends in an idle marker without a prompt is not a turn. Queued input that OpenCode has not yet admitted is not shown.
-  - OpenCode updates its rows in place, so Live re-reads the turn, up to its latest 250 rows, whenever the session's event counter changes, and updates only the cards whose content changed. A revert deletes rows; Live then redraws the turn, and a reverted turn is no longer available.
-  - Live shows only what is in the database: text blocks once recorded whole, and tool output when the tool finishes. It does not fetch streaming output from OpenCode's server. A subagent runs in its own child session, which has its own turns.
+  - OpenCode updates its rows in place, so Live re-reads the turn, up to its latest 250 rows, whenever the session's event counter changes, and updates only the cards whose content changed (images included). It shows the latest 250 cards within the usual text limits and counts the earlier ones. A replaced database file starts the view again.
+  - A committed revert deletes rows, and their cards leave the page; a reverted turn is no longer available. While a revert is only staged, its activity is not the current turn, and a page that shows it says the revert is staged. If Live can't place the staged boundary, it picks no current turn.
+  - Live shows only what is in the database: text blocks once recorded whole, and tool output when the tool finishes. It does not fetch streaming output from OpenCode's server. A subagent runs in its own child session, which has its own turns. What Live leaves out or can't interpret is listed in its status line.
 
 ## Themes
 

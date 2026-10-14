@@ -27,7 +27,7 @@ Options:
   --font-size <px>                Base font size.
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --working                       Opt in to Working: recorded prompts, tool output and images (may contain sensitive content).
-  --live                          Also follow a session's current turn as it is recorded (implies --working).
+  --live                          Also follow a session's current turn as it is recorded (OpenCode: v2 sessions; implies --working).
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.

@@ -191,25 +191,23 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 	};
 }
 
-/** What the page compares to decide whether a card changed: everything a card shows. */
+/** What the page compares to decide whether a card changed: everything a card shows, image bytes included. */
 function liveCardVersion(event: OpenCodeLiveEvent) {
-	const images = (event.images ?? []).map(value => { const image = value as Record<string, unknown>; return image.unavailable ?? `${image.mimeType}:${image.byteLength}:${(image.data as string | undefined)?.length}`; });
-	const source = JSON.stringify([event.kind, event.label, event.text, event.callId ?? "", event.questionAnswers ?? "", images, event.pending === true]);
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < source.length; i++) { hash ^= source.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; }
-	return hash.toString(36);
+	const { id: _id, ...shown } = event;
+	return createHash("sha256").update(JSON.stringify(shown)).digest("base64url").slice(0, 22);
 }
 
 /**
  * Live recorded activity for one OpenCode v2 session. OpenCode updates its rows in
  * place instead of appending, so a request re-reads the turn when the session's
  * revision moves and compares its cards by id: only changed cards carry the new
- * sequence. A card that disappears (a revert deletes rows) starts a new generation,
- * which the page resyncs to. Leases as createLiveSource. Exported for tests.
+ * sequence, and cards no longer in the turn leave the page's list. A replaced
+ * database starts every view again in a new generation, which the page resyncs to.
+ * Leases as createLiveSource. Exported for tests.
  */
 export function createOpenCodeLiveSource(session: { path: string }, { leaseMs = LIVE_LEASE_MS, leases = processLeases, openStore = createOpenCodeStore }: { leaseMs?: number; leases?: LiveLeases; openStore?: (database: string) => Pick<OpenCodeStore, "live" | "close"> } = {}): LiveSource {
 	type View = { revision: string; generation: string; sequence: number; versions: Map<string, string>; changed: Map<string, number>; summary: string; updatedAt: number; loaded: boolean; snapshot?: object };
-	type Lease = { store: Pick<OpenCodeStore, "live" | "close">; views: Map<string, View>; current?: { revision: string; anchor?: string }; timer?: NodeJS.Timeout };
+	type Lease = { store: Pick<OpenCodeStore, "live" | "close">; views: Map<string, View>; database?: string; replaced?: boolean; current?: { revision: string; anchor?: string }; timer?: NodeJS.Timeout };
 	const database = session.path.slice(0, session.path.lastIndexOf("#"));
 	let lease: Lease | undefined;
 	const release = () => {
@@ -232,26 +230,30 @@ export function createOpenCodeLiveSource(session: { path: string }, { leaseMs = 
 	};
 	const apply = (active: Lease, turn: OpenCodeLiveTurn, revision: string) => {
 		const existing = active.views.get(turn.anchor);
-		const ids = new Set(turn.events.map(event => event.id));
-		const view: View = existing && [...existing.versions.keys()].every(id => ids.has(id)) ? existing
-			: { revision, generation: Math.random().toString(36).slice(2, 10), sequence: 0, versions: new Map(), changed: new Map(), summary: "", updatedAt: Date.now(), loaded: !existing };
+		// Activity read when the page first asks is Loaded; anything after is Updated.
+		const view: View = existing ?? { revision, generation: Math.random().toString(36).slice(2, 10), sequence: 0, versions: new Map(), changed: new Map(), summary: "", updatedAt: Date.now(), loaded: !active.replaced };
 		view.revision = revision;
 		const next = view.sequence + 1;
 		let moved = false;
+		const ids = new Set<string>();
 		for (const event of turn.events) {
+			ids.add(event.id);
 			const version = liveCardVersion(event);
 			if (view.versions.get(event.id) !== version) { view.versions.set(event.id, version); view.changed.set(event.id, next); moved = true; }
 		}
-		const summary = JSON.stringify([turn.status, turn.finalKey ?? null, turn.newerAnchor ?? null, turn.notices]);
+		// Cards no longer shown (revert, or older than the window): forget them, so one that
+		// comes back is sent again.
+		for (const id of view.versions.keys()) if (!ids.has(id)) { view.versions.delete(id); view.changed.delete(id); moved = true; }
+		const summary = JSON.stringify([turn.status, turn.finalKey ?? null, turn.answerUnavailable === true, turn.newerAnchor ?? null, turn.omitted, turn.notices]);
 		if (summary !== view.summary) { view.summary = summary; moved = true; }
 		if (moved) {
 			view.sequence = next;
-			// Activity read when the page first asked is Loaded; anything after is Updated.
 			if (view.snapshot) { view.loaded = false; view.updatedAt = Date.now(); }
 		}
 		view.snapshot = {
 			generation: view.generation, anchor: turn.anchor, sourceAgent: "opencode", status: turn.status, finalKey: turn.finalKey,
-			sequence: view.sequence, updatedAt: view.updatedAt, loaded: view.loaded, omitted: 0, notices: turn.notices,
+			...(turn.answerUnavailable ? { answerUnavailable: true } : {}),
+			sequence: view.sequence, updatedAt: view.updatedAt, loaded: view.loaded, omitted: turn.omitted, notices: turn.notices,
 			events: turn.events.map(event => ({ ...event, changed: view.changed.get(event.id) ?? 0, version: view.versions.get(event.id) })),
 			...(turn.newerAnchor ? { newerAnchor: turn.newerAnchor } : {}),
 		};
@@ -267,7 +269,13 @@ export function createOpenCodeLiveSource(session: { path: string }, { leaseMs = 
 		const result = await leases.exclusive(() => active.store.live(session.path, anchor, since, signal));
 		if (lease !== active) return { current: undefined, snapshot: undefined };
 		if (!result) { active.current = undefined; active.views.clear(); return { current: undefined, snapshot: undefined }; }
-		if (result.unchanged) return { current: active.current?.anchor, snapshot: view?.snapshot };
+		// Another database at the same path: nothing read from the old one carries over.
+		if (active.database !== undefined && active.database !== result.database) { active.views.clear(); active.current = undefined; active.replaced = true; }
+		active.database = result.database;
+		if (result.unchanged) {
+			const cached = anchor === undefined ? undefined : active.views.get(anchor);
+			return { current: active.current?.anchor, snapshot: cached?.snapshot };
+		}
 		active.current = { revision: result.revision, anchor: result.current };
 		if (!result.turn) { if (anchor !== undefined) active.views.delete(anchor); return { current: result.current, snapshot: undefined }; }
 		return { current: result.current, snapshot: apply(active, result.turn, result.revision) };
