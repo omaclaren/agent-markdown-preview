@@ -72,6 +72,10 @@ Working inherits its response's palette and text size. Each view remembers its r
   - A committed revert deletes rows, and their cards leave the page; a reverted turn is no longer available. While a revert is only staged, its activity is not the current turn, and a page that shows it says the revert is staged. If Live can't place the staged boundary, it picks no current turn.
   - Live shows only what is in the database: text blocks once recorded whole, and tool output when the tool finishes. It does not fetch streaming output from OpenCode's server. A subagent runs in its own child session, which has its own turns. What Live leaves out or can't interpret is listed in its status line.
 
+## Rendering
+
+- `<details>` blocks are recognised when `<details>` (or `<details open>`) and `</details>` each stand alone at the start of a line, properly paired, with an optional `<summary>…</summary>` on the opening line or the next one. Blocks can nest. The summary is shown as plain text, and the block starts closed unless marked `open`. Indented, attributed, unpaired or code-quoted tags stay literal; other raw HTML stays disabled.
+
 ## Themes
 
 - `--theme agent` picks a palette from each response's recorded source, including in merged previews and as new responses arrive. The index, waiting pages and file previews use the neutral palette. The palettes are built into the preview; they don't follow an agent's live terminal theme.
