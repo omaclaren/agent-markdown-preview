@@ -6,6 +6,8 @@ Reference material for [agent-markdown-preview](../README.md): what a preview se
 
 The index and each preview run their own server on `127.0.0.1` with their own random token. On first load the page exchanges the token for a browser cookie. **Copy link** produces a fresh link for another browser. Working uses separate remembered credentials from ordinary previews. The remembered-addresses file contains the tokens and is readable only by you.
 
+Rendered content can't run scripts. Raw HTML is disabled, and the last step of every render removes event-handler attributes (`onclick` and the like) that Pandoc's attribute syntax would otherwise allow, and unlinks `javascript:`, `vbscript:` and `livescript:` URLs. Every page also sends a script policy that allows only the page's own scripts.
+
 A preview serves its rendered pages, the images and PDFs they reference, and supported documents explicitly linked from retained responses or recently opened documents. These routes require the preview's cookie; there is no directory browser or arbitrary file-path endpoint. Following a session does not expose its log file.
 
 Anyone with a preview's link can follow its local links, see resolved filesystem paths and request open or reveal actions for those linked files and folders, including paths outside the project. Linked tabs may expire as retained history is pruned; reopen an expired tab from its source preview.
