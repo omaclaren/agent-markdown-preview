@@ -74,7 +74,7 @@ Working inherits its response's palette and text size. Each view remembers its r
 
 ## Rendering
 
-- `<details>` blocks are recognised when `<details>` (or `<details open>`) and `</details>` each stand alone at the start of a line, properly paired, with an optional `<summary>…</summary>` on the opening line or the next one. Blocks can nest. The summary is shown as plain text, and the block starts closed unless marked `open`. Indented, attributed, unpaired or code-quoted tags stay literal; other raw HTML stays disabled.
+- `<details>` blocks are recognised when `<details>` (or `<details open>`) and `</details>` each stand alone at the start of a line, properly paired, with an optional `<summary>…</summary>` on the opening line or on the next nonblank line before the content. Blocks can nest, and nothing in the content (a `:::` line, for example) ends a block early. The summary is shown as plain text, and the block starts closed unless marked `open`. Indented, attributed, unpaired or code- or math-quoted tags stay literal, and an indented or attributed tag keeps its own closing tag. Other raw HTML stays disabled and is shown as text, so a pair inside a literal `<div>` or `<pre>` line is still recognised.
 
 ## Themes
 
