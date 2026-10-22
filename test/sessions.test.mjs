@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { claudeProjectDirName, createResponseReader, createSessionReader, createSessionFinder, detectAgent, piSessionDirName } from "../dist/sessions.js";
+import { claudeProjectDirName, createResponseReader, createSessionReader, createSessionFinder, detectAgent, modelLabel, piSessionDirName } from "../dist/sessions.js";
 import { turnDetailsFromRecords } from "../dist/shared/turn-details.js";
 import { CLAUDE_RESPONSE_TEXT_LIMIT } from "../dist/shared/claude-response.js";
 
@@ -26,6 +26,41 @@ test("Claude Code: final message only, blocks of one message accumulate, sidecha
 	]);
 	assert.deepEqual(responses.map(r => [r.key, r.markdown]), [["claude:m2", "Part one"], ["claude:m2", "Part one\n\nPart two"]]);
 	assert.equal(responses[0].time, Date.parse(at));
+});
+
+test("answers carry the model the agent recorded for them", () => {
+	const claude = read("claude", [
+		{ type: "assistant", message: { id: "m1", model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "A" }] } },
+		{ type: "assistant", message: { id: "m2", model: "<synthetic>", stop_reason: "end_turn", content: [{ type: "text", text: "B" }] } },
+		{ type: "assistant", message: { id: "m3", stop_reason: "end_turn", content: [{ type: "text", text: "C" }] } },
+	]);
+	assert.deepEqual(claude.map(r => r.model), ["claude-opus-5-5", undefined, undefined]);
+	assert.ok(!("model" in claude[1]) && !("model" in claude[2]), "an unknown model adds no field");
+
+	// Codex records the model in each turn's turn_context, before the answer.
+	const context = payload => ({ type: "turn_context", payload: { cwd: "/x", ...payload } });
+	const done = (turn_id, text) => ({ type: "event_msg", payload: { type: "task_complete", turn_id, last_agent_message: text } });
+	const codex = read("codex", [
+		context({ turn_id: "T1", model: "gpt-5.1-codex-max" }), context({ turn_id: "T2", model: "gpt-5.2" }),
+		done("T2", "second"), done("T1", "first"), done("T3", "its turn_context was not read"),
+		context({ model: "gpt-5-codex" }), done("T4", "older log: untagged turn_context"), done(undefined, "older log: untagged answer"),
+	]);
+	assert.deepEqual(codex.map(r => r.model), ["gpt-5.2", "gpt-5.1-codex-max", undefined, "gpt-5-codex", "gpt-5-codex"]);
+
+	const pi = (id, message) => ({ type: "message", id, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: id }], ...message } });
+	assert.deepEqual(read("pi", [pi("p1", { provider: "anthropic", model: "claude-sonnet-4-5" }), pi("p2", { responseModel: "gpt-5.1" }), pi("p3", { model: 42 }), pi("p4", {})]).map(r => r.model),
+		["claude-sonnet-4-5", "gpt-5.1", undefined, undefined]);
+});
+
+test("model labels: known families read naturally, anything else as recorded", () => {
+	for (const [id, label] of [
+		["claude-opus-5-5", "Claude Opus 5.5"], ["claude-opus-4-1-20250805", "Claude Opus 4.1"], ["claude-sonnet-4-20250514", "Claude Sonnet 4"],
+		["claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"], ["anthropic/claude-haiku-4.5", "Claude Haiku 4.5"],
+		["us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"], ["claude-opus-4-1@20250805", "Claude Opus 4.1"],
+		["gpt-5.1-codex-max", "GPT-5.1-Codex-Max"], ["gpt-5", "GPT-5"], ["gpt-4o", "GPT-4o"], ["openai/gpt-5.2", "GPT-5.2"],
+		["gemini-2.5-pro", "Gemini 2.5 Pro"], ["models/gemini-3-pro-preview", "Gemini 3 Pro Preview"],
+		["o3", "o3"], ["glm-4.6", "glm-4.6"], ["gpt-4o-2024-08-06", "gpt-4o-2024-08-06"], ["claude-3-7-sonnet-latest", "claude-3-7-sonnet-latest"], [" qwen3-coder ", "qwen3-coder"],
+	]) assert.equal(modelLabel(id), label, id);
 });
 
 test("Claude partial blocks wait for completion and match Working exactly, including empty completion markers", () => {

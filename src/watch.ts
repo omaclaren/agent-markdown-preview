@@ -15,7 +15,7 @@ import {
 } from "./render.js";
 import { styleForMode, themeFinisher } from "./theme.js";
 import type { PageTheme } from "./appearance.js";
-import { AGENT_LABELS, AGENTS, defaultSessionRoots, detectAgent, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
+import { AGENT_LABELS, AGENTS, defaultSessionRoots, detectAgent, modelLabel, type AgentKind, type AgentResponse, type SessionRoots } from "./sessions.js";
 import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { isHtmlPagePath } from "./shared/html-page-preview.js";
 import { readLinkedDocument } from "./shared/read-linked-document.js";
@@ -466,12 +466,12 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 /** The most recent `count` responses across sessions, oldest first. */
 const recentAcross = (sessions: SessionState[], count: number) => sessions.flatMap(s => s.history).sort((a, b) => a.time - b.time).slice(-count);
 
-/** A small line above each response saying where it came from. */
+/** A small line above each response saying where it came from and which model wrote it. */
 function captionFor(monitor: SessionMonitor) {
 	return (response: AgentResponse) => {
 		const session = monitor.sessions().find(s => s.path === response.sessionPath);
 		const title = session?.title ? (session.title.length > 60 ? session.title.slice(0, 59) + "…" : session.title) : null;
-		return [`${AGENT_LABELS[response.agent]}${session ? ` ${session.shortId}` : ""}`, title, timeOfDay(response.time)].filter(Boolean).join(" · ");
+		return [`${AGENT_LABELS[response.agent]}${session ? ` ${session.shortId}` : ""}`, response.model ? modelLabel(response.model) : null, title, timeOfDay(response.time)].filter(Boolean).join(" · ");
 	};
 }
 

@@ -126,6 +126,9 @@ test("OpenCode message adapters: v1 parts / v2 content, completed text only, sta
 	const data = { id: "msg_1", finish: "stop", time: { completed: 123 }, content: [{ type: "text", text: "First" }, { type: "reasoning", text: "private" }, { type: "tool", text: "output" }, { type: "text", text: "ignore", ignored: true }, { type: "text", text: "synthetic", synthetic: true }, { type: "text", text: "Second" }] };
 	assert.equal(read({ type: "assistant", ...data }).markdown, "First\n\nSecond");
 	assert.equal(read({ info: { role: "assistant", ...data, content: undefined }, parts: data.content }).key, "opencode:msg_1");
+	assert.equal(read({ type: "assistant", ...data, modelID: "claude-sonnet-4-5", providerID: "anthropic" }).model, "claude-sonnet-4-5", "v1 model");
+	assert.equal(read({ type: "assistant", ...data, model: { providerID: "openai", id: "gpt-5.1-codex", variant: "default" } }).model, "gpt-5.1-codex", "v2 model");
+	assert.ok(!("model" in read({ type: "assistant", ...data })), "no recorded model, no field");
 	for (const extra of [{ type: "compaction" }, { type: "user" }, { time: {} }, { time: { completed: "123" } }, { finish: "tool-calls" }, { finish: "error" }, { error: { message: "fail" } }, { summary: true }]) assert.equal(read({ type: "assistant", ...data, ...extra }), null);
 	assert.equal(sessionShortId("/db#ses_timestampabcd"), "abcd");
 	assert.equal(defaultSessionRoots({ XDG_DATA_HOME: "/custom" }).opencode, "/custom/opencode/opencode.db");
@@ -152,11 +155,12 @@ test("OpenCode discovery: both schemas, v2 wins migrations, directory/child/arch
 
 test("OpenCode v1-only SQLite: final text parts, not tool calls, reasoning, compaction or errors", async t => {
 	const f = fixture(t, [1]); f.session(1, "ses_old");
-	f.v1("ses_old", "msg_001", "old final"); f.v1("ses_old", "msg_002", "tool preamble", { finish: "tool-calls" });
+	f.v1("ses_old", "msg_001", "old final", { modelID: "claude-sonnet-4-5", providerID: "anthropic" }); f.v1("ses_old", "msg_002", "tool preamble", { finish: "tool-calls" });
 	f.v1("ses_old", "msg_003", "summary", { summary: true }); f.v1("ses_old", "msg_004", "failed", { error: { name: "abort" } });
 	f.v1("ses_old", "msg_005", "streaming", { time: { created: Date.now() } });
 	let snapshot = await f.store.snapshot(f.source("ses_old"));
 	assert.deepEqual(snapshot.history.map(r => r.markdown), ["old final"]); assert.equal(snapshot.working, true);
+	assert.equal(snapshot.history[0].model, "claude-sonnet-4-5");
 	f.db.prepare("UPDATE message SET data=? WHERE id='msg_005'").run(JSON.stringify({ role: "assistant", finish: "stop", time: { completed: Date.now() } }));
 	f.db.prepare("UPDATE part SET data=? WHERE message_id='msg_005'").run(JSON.stringify({ type: "text", text: "finished" }));
 	snapshot = await f.store.snapshot(f.source("ses_old"));
@@ -168,13 +172,14 @@ test("OpenCode v2-only: seq order, idle settlement, one answer per turn, no tool
 	f.v2("ses_new", "msg_z", 1, "user", { text: "First prompt title" });
 	f.v2("ses_new", "msg_y", 2, "assistant", f.answer("Preamble", Date.now(), { finish: "tool-calls" }));
 	f.v2("ses_new", "msg_x", 3, "assistant", f.answer("Earlier step"));
-	f.v2("ses_new", "msg_b", 4, "assistant", f.answer("Final **answer**", Date.now(), { content: [{ type: "reasoning", text: "hidden" }, { type: "tool", name: "bash", state: { output: "hidden" } }, { type: "text", text: "Final **answer**" }] }));
+	f.v2("ses_new", "msg_b", 4, "assistant", f.answer("Final **answer**", Date.now(), { model: { providerID: "openai", id: "gpt-5.1-codex", variant: "default" }, content: [{ type: "reasoning", text: "hidden" }, { type: "tool", name: "bash", state: { output: "hidden" } }, { type: "text", text: "Final **answer**" }] }));
 	let snapshot = await f.store.snapshot(f.source("ses_new"));
 	assert.equal(snapshot.history.length, 0, "provider completion is not v2 turn completion"); assert.equal(snapshot.working, true); assert.equal(snapshot.title, "First prompt title");
 	f.v2("ses_new", "msg_a", 5, "idle", { outcome: "succeeded" });
 	f.db.exec("UPDATE session_v2 SET time_suspended=NULL WHERE id='ses_new'");
 	snapshot = await f.store.snapshot(f.source("ses_new"));
 	assert.deepEqual(snapshot.history.map(r => r.markdown), ["Final **answer**"]); assert.equal(snapshot.working, false);
+	assert.equal(snapshot.history[0].model, "gpt-5.1-codex");
 	f.v2("ses_new", "msg_0", 6, "compaction", { status: "completed", summary: "not an answer" });
 	assert.deepEqual((await f.store.snapshot(f.source("ses_new"))).history, snapshot.history);
 });

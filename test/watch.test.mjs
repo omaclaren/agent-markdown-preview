@@ -280,15 +280,16 @@ test("history fill can be turned off", { skip, timeout: 30_000 }, async t => {
 	assert.match(await page(watch.url), /Two/);
 });
 
-test("per-session previews caption responses with agent, session and title", { skip, timeout: 30_000 }, async t => {
+test("per-session previews caption responses with agent, session, model and title", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
-	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), line({ type: "ai-title", aiTitle: "Review the hosting core" }) + claudeAnswer("a1", "Body text", iso(-1_000)));
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), line({ type: "ai-title", aiTitle: "Review the hosting core" })
+		+ line({ type: "assistant", timestamp: iso(-1_000), message: { id: "a1", model: "claude-opus-5-5-20261001", stop_reason: "end_turn", content: [{ type: "text", text: "Body text" }] } }));
 	const index = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
 	t.after(() => index.close());
 	const token = new URL(index.url).searchParams.get("token");
 	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, index.url))).json()).sessions;
 	const url = (await fetch(new URL(`/open/${session.id}?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
-	assert.match(await page(url), /<em>Claude Code aaaa · Review the hosting core · [^<]+<\/em>/);
+	assert.match(await page(url), /<em>Claude Code aaaa · Claude Opus 5\.5 · Review the hosting core · [^<]+<\/em>/);
 });
 
 test("a restarted preview notices a reconnecting tab instead of needing a new one", { skip, timeout: 30_000 }, async t => {

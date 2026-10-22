@@ -12,6 +12,29 @@ export type AgentKind = "claude" | "codex" | "pi" | "opencode";
 export const AGENTS: readonly AgentKind[] = ["claude", "codex", "pi", "opencode"];
 export const AGENT_LABELS: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" };
 
+/**
+ * A readable name for a recorded model ID: "claude-opus-5-5-20261001" is
+ * "Claude Opus 5.5", "gpt-5.1-codex-max" is "GPT-5.1-Codex-Max". Other IDs
+ * are shown as recorded rather than guessed at.
+ */
+export function modelLabel(id: string): string {
+	const recorded = id.trim();
+	// Without a provider prefix ("anthropic/", "us.anthropic.") or a date or
+	// version suffix ("-20250805", "@20250805", "-v1:0").
+	const name = recorded.slice(recorded.lastIndexOf("/") + 1).replace(/^(?:[a-z]{2}\.)?anthropic\./, "").replace(/(?:[-@]\d{8})?(?:-v\d+(?::\d+)?)?$/, "");
+	const word = (text: string) => text[0]!.toUpperCase() + text.slice(1);
+	const words = (rest: string, separator: string) => rest.replace(/-([a-z])/g, (_, first: string) => separator + first.toUpperCase());
+	let m = name.match(/^claude-([a-z]+)-(\d+)(?:[-.](\d{1,2}))?$/);
+	if (m) return `Claude ${word(m[1]!)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
+	m = name.match(/^claude-(\d+)(?:[-.](\d))?-([a-z]+)$/);
+	if (m) return `Claude ${m[1]}${m[2] ? `.${m[2]}` : ""} ${word(m[3]!)}`;
+	m = name.match(/^gpt-(\d[a-z\d.]*)((?:-[a-z]+)*)$/);
+	if (m) return `GPT-${m[1]}${words(m[2]!, "-")}`;
+	m = name.match(/^gemini-(\d[\d.]*)((?:-[a-z]+)*)$/);
+	if (m) return `Gemini ${m[1]}${words(m[2]!, " ")}`;
+	return recorded;
+}
+
 export interface AgentResponse {
 	agent: AgentKind;
 	/** Stable per response; a later entry with the same key revises that response. */
@@ -20,6 +43,8 @@ export interface AgentResponse {
 	/** Milliseconds since the epoch, from the log entry when available. */
 	time: number;
 	sessionPath: string;
+	/** The model ID the agent recorded for this answer, when it recorded one. */
+	model?: string;
 }
 
 export interface SessionFile {
@@ -53,6 +78,13 @@ const entryTime = (value: unknown, fallback: number) => {
 	const parsed = typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : NaN;
 	return Number.isFinite(parsed) ? parsed : fallback;
 };
+/** `{ model }` for a plausible recorded model ID, otherwise nothing.
+ * Claude Code marks answers it wrote itself as "<synthetic>". A function
+ * declaration, as opencode.ts imports it back from this module. */
+export function recordedModel(value: unknown): { model?: string } {
+	const model = typeof value === "string" ? value.trim() : "";
+	return model && model.length <= 100 && !model.startsWith("<") ? { model } : {};
+}
 
 export type SessionEvent =
 	| { kind: "response"; response: AgentResponse }
@@ -151,18 +183,31 @@ export function createResponseReader(agent: AgentKind, sessionPath: string): (en
 		const assemble = createClaudeResponseAssembler();
 		return entry => {
 			const response = assemble(entry);
-			return response ? { agent, ...response, time: entryTime(record(entry)?.timestamp, Date.now()), sessionPath } : null;
+			const e = record(entry);
+			return response ? { agent, ...response, ...recordedModel(record(e?.message)?.model), time: entryTime(e?.timestamp, Date.now()), sessionPath } : null;
 		};
 	}
 	if (agent === "codex") {
+		// Each turn records its model in a turn_context entry before the answer.
+		// Older logs do not tag that entry with the turn.
+		const turnModels = new Map<string, string>();
+		let untagged: string | undefined;
 		return entry => {
 			const e = record(entry);
 			const payload = record(e?.payload);
+			if (e?.type === "turn_context" && typeof payload?.model === "string") {
+				if (typeof payload.turn_id !== "string") { untagged = payload.model; return null; }
+				untagged = undefined;
+				turnModels.delete(payload.turn_id); turnModels.set(payload.turn_id, payload.model);
+				while (turnModels.size > 64) turnModels.delete(turnModels.keys().next().value!);
+				return null;
+			}
 			if (e?.type !== "event_msg" || payload?.type !== "task_complete") return null;
 			const markdown = payload.last_agent_message;
 			if (typeof markdown !== "string" || !markdown.trim()) return null;
 			const turn = typeof payload.turn_id === "string" ? payload.turn_id : String(e.timestamp ?? Date.now());
-			return { agent, key: `codex:${turn}`, markdown, time: entryTime(e.timestamp, Date.now()), sessionPath };
+			const model = (typeof payload.turn_id === "string" ? turnModels.get(payload.turn_id) : undefined) ?? untagged;
+			return { agent, key: `codex:${turn}`, markdown, ...recordedModel(model), time: entryTime(e.timestamp, Date.now()), sessionPath };
 		};
 	}
 	return entry => {
@@ -174,7 +219,7 @@ export function createResponseReader(agent: AgentKind, sessionPath: string): (en
 		const markdown = extractAssistantMarkdownContent(message.content);
 		if (!markdown) return null;
 		const id = typeof e.id === "string" ? e.id : String(e.timestamp ?? Date.now());
-		return { agent, key: `pi:${id}`, markdown, time: entryTime(e.timestamp ?? message.timestamp, Date.now()), sessionPath };
+		return { agent, key: `pi:${id}`, markdown, ...recordedModel(message.model ?? message.responseModel), time: entryTime(e.timestamp ?? message.timestamp, Date.now()), sessionPath };
 	};
 }
 

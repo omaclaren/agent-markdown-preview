@@ -2,7 +2,7 @@
 // session_v2/session_message projections. Never boot OpenCode or run migrations.
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { AgentResponse, SessionFile } from "./sessions.js";
+import { recordedModel, type AgentResponse, type SessionFile } from "./sessions.js";
 import { createTurnDetails, TURN_EVENT_LIMIT, TURN_TOTAL_LIMIT } from "./shared/turn-details.js";
 import { TURN_READ_BYTES, TURN_RECORD_BYTES } from "./shared/read-turn-details.js";
 
@@ -45,7 +45,8 @@ export function readOpenCodeResponse(entry: unknown, sessionPath: string): Agent
 	if (!Array.isArray(content)) return null;
 	const markdown = content.filter(part => part?.type === "text" && !part.synthetic && !part.ignored && typeof part.text === "string")
 		.map(part => part.text).join("\n\n");
-	return markdown.trim() ? { agent: "opencode", key: `opencode:${info.id}`, markdown, time, sessionPath } : null;
+	// v1 records modelID; v2 (and v1 answers migrated to it) model.id.
+	return markdown.trim() ? { agent: "opencode", key: `opencode:${info.id}`, markdown, ...recordedModel(info.modelID ?? record(info.model)?.id), time, sessionPath } : null;
 }
 
 export interface OpenCodeSnapshot {
@@ -192,7 +193,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 		if (v2) {
 			// Projection order is seq, NOT ID or wall-clock time. Idle markers close
 			// turns (including steered prompts). Imported v1 answers have no marker.
-			const rows = db.prepare(`SELECT id,seq,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish
+			const rows = db.prepare(`SELECT id,seq,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${field("model.id")} AS model
 				FROM session_message WHERE session_id=? AND type='assistant' AND ${completed} ORDER BY seq DESC LIMIT ?`).all(id, CANDIDATES);
 			const usedTurns = new Set<number>();
 			for (const row of rows) {
@@ -208,7 +209,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				if (history.length === HISTORY) break;
 			}
 		} else {
-			const rows = db.prepare(`SELECT id,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish
+			const rows = db.prepare(`SELECT id,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${field("modelID")} AS model
 				FROM message WHERE session_id=? AND ${field("role")}='assistant' AND ${completed} ORDER BY id DESC LIMIT ?`).all(id, CANDIDATES);
 			for (const row of rows) {
 				const texts = db.prepare(`WITH texts AS (
@@ -221,7 +222,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 		}
 		function addResponse(row: Row, texts: Row[], settledAt?: number) {
 			if (texts.reduce((size, part) => size + (typeof part.text === "string" ? Buffer.byteLength(part.text) : 0), 0) > MAX_TEXT_BYTES) return;
-			const response = readOpenCodeResponse({ type: "assistant", id: row.id, finish: row.finish,
+			const response = readOpenCodeResponse({ type: "assistant", id: row.id, finish: row.finish, modelID: row.model,
 				time: { completed: row.completed }, content: texts.map(part => ({ type: "text", text: part.text })) }, source);
 			if (response) {
 				if (settledAt !== undefined) response.time = Math.max(response.time, settledAt);
