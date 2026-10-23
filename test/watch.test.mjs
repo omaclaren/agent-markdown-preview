@@ -292,6 +292,24 @@ test("per-session previews caption responses with agent, session, model and titl
 	assert.match(await page(url), /<em>Claude Code aaaa · Claude Opus 5\.5 · Review the hosting core · [^<]+<\/em>/);
 });
 
+test("captions read exactly as recorded: no entities, links, citations, markup or smart quotes", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	// An unmatched [ must not pair with the answer's display math either.
+	const model = `x&amp;y "q"... *b* _u_ [l](e) [o ^s^ ~t~ $m$ \\z <i>x</i> #h`, title = "Don't -- see https://e.test/a & @me";
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000bbbb.jsonl"), line({ type: "ai-title", aiTitle: title })
+		+ line({ type: "assistant", timestamp: iso(-1_000), message: { id: "b1", model, stop_reason: "end_turn", content: [{ type: "text", text: "Body text \\[x^2 + 1\\]" }] } }));
+	const index = await startSessionIndex({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), ...fast });
+	t.after(() => index.close());
+	const token = new URL(index.url).searchParams.get("token");
+	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, index.url))).json()).sessions;
+	const url = (await fetch(new URL(`/open/${session.id}?token=${token}`, index.url), { redirect: "manual" })).headers.get("location");
+	const html = await page(url), caption = html.match(/<em>(Claude Code bbbb[^]*?)<\/em>/)[1];
+	assert.match(html, /<math display="block"[^]*?x\^2 \+ 1/, "the answer's math still renders");
+	assert.doesNotMatch(caption, /</, "no markup inside the caption");
+	const text = caption.replace(/&(lt|gt|quot|#39|amp);/g, (_, name) => ({ lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" })[name]);
+	assert.equal(text.replace(/ · [^·]+$/, ""), `Claude Code bbbb · ${model} · ${title}`);
+});
+
 test("a restarted preview notices a reconnecting tab instead of needing a new one", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
 	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("a1", "Hi", iso(-1_000)));

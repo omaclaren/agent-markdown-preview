@@ -123,6 +123,9 @@ const HISTORY = 20;
 const CANDIDATES = 256;
 const safeData = "CASE WHEN json_valid(data) THEN data ELSE '{}' END";
 const field = (name: string) => `json_extract(${safeData}, '$.${name}')`;
+// json_extract returns objects and arrays as JSON text: a model ID is read only
+// as a string, within recordedModel's length bound.
+const modelField = (name: string) => `CASE WHEN json_type(${safeData},'$.${name}')='text' AND length(${field(name)})<=100 THEN ${field(name)} END`;
 const completed = `${field("time.completed")} IS NOT NULL AND ${field("finish")} IN ('stop','length','content-filter') AND ${field("error")} IS NULL AND COALESCE(${field("summary")},0) = 0`;
 
 export function createOpenCodeStore(databasePath: string): OpenCodeStore {
@@ -193,7 +196,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 		if (v2) {
 			// Projection order is seq, NOT ID or wall-clock time. Idle markers close
 			// turns (including steered prompts). Imported v1 answers have no marker.
-			const rows = db.prepare(`SELECT id,seq,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${field("model.id")} AS model
+			const rows = db.prepare(`SELECT id,seq,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${modelField("model.id")} AS model
 				FROM session_message WHERE session_id=? AND type='assistant' AND ${completed} ORDER BY seq DESC LIMIT ?`).all(id, CANDIDATES);
 			const usedTurns = new Set<number>();
 			for (const row of rows) {
@@ -209,7 +212,7 @@ export function createOpenCodeStore(databasePath: string): OpenCodeStore {
 				if (history.length === HISTORY) break;
 			}
 		} else {
-			const rows = db.prepare(`SELECT id,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${field("modelID")} AS model
+			const rows = db.prepare(`SELECT id,time_created,${field("time.completed")} AS completed,${field("finish")} AS finish,${modelField("modelID")} AS model
 				FROM message WHERE session_id=? AND ${field("role")}='assistant' AND ${completed} ORDER BY id DESC LIMIT ?`).all(id, CANDIDATES);
 			for (const row of rows) {
 				const texts = db.prepare(`WITH texts AS (

@@ -46,10 +46,21 @@ test("answers carry the model the agent recorded for them", () => {
 		context({ model: "gpt-5-codex" }), done("T4", "older log: untagged turn_context"), done(undefined, "older log: untagged answer"),
 	]);
 	assert.deepEqual(codex.map(r => r.model), ["gpt-5.2", "gpt-5.1-codex-max", undefined, "gpt-5-codex", "gpt-5-codex"]);
+	// The latest context applies even without a usable model: no turn borrows another's.
+	const unusable = read("codex", [
+		context({ model: "legacy-model" }), context({ turn_id: "T5" }), done("T5", "tagged context without a model"),
+		context({ turn_id: "T6", model: "gpt-5.2" }), context({ turn_id: "T6", model: { id: "gpt-5.2" } }), done("T6", "its latest context has no usable model"),
+		context({ turn_id: "T7", model: "x".repeat(101) }), done("T7", "too long"),
+		context({ model: "legacy-model" }), context({ model: "bad\nmodel" }), done(undefined, "the latest untagged context has no usable model"),
+	]);
+	assert.deepEqual(unusable.map(r => "model" in r), [false, false, false, false]);
 
 	const pi = (id, message) => ({ type: "message", id, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: id }], ...message } });
 	assert.deepEqual(read("pi", [pi("p1", { provider: "anthropic", model: "claude-sonnet-4-5" }), pi("p2", { responseModel: "gpt-5.1" }), pi("p3", { model: 42 }), pi("p4", {})]).map(r => r.model),
 		["claude-sonnet-4-5", "gpt-5.1", undefined, undefined]);
+	// One line of at most 100 characters, with no control, format or separator characters.
+	assert.deepEqual(read("pi", [pi("p5", { model: "custom\n\n- LIST" }), pi("p6", { model: "a\tb" }), pi("p7", { model: "a\u202eb" }), pi("p8", { model: "a\u2028b" }),
+		pi("p9", { model: "x".repeat(101) }), pi("p10", { model: " glm-4.6 " })]).map(r => r.model), [undefined, undefined, undefined, undefined, undefined, "glm-4.6"]);
 });
 
 test("model labels: known families read naturally, anything else as recorded", () => {

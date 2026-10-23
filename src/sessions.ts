@@ -78,12 +78,15 @@ const entryTime = (value: unknown, fallback: number) => {
 	const parsed = typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : NaN;
 	return Number.isFinite(parsed) ? parsed : fallback;
 };
-/** `{ model }` for a plausible recorded model ID, otherwise nothing.
- * Claude Code marks answers it wrote itself as "<synthetic>". A function
- * declaration, as opencode.ts imports it back from this module. */
+/** `{ model }` for a plausible recorded model ID, otherwise nothing: a string
+ * of at most 100 characters (opencode.ts applies the same bound in SQL), with
+ * no control, format or line-separator characters. Claude Code marks answers
+ * it wrote itself as "<synthetic>". A function declaration, as opencode.ts
+ * imports it back from this module. */
 export function recordedModel(value: unknown): { model?: string } {
-	const model = typeof value === "string" ? value.trim() : "";
-	return model && model.length <= 100 && !model.startsWith("<") ? { model } : {};
+	if (typeof value !== "string" || value.length > 100 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)) return {};
+	const model = value.trim();
+	return model && !model.startsWith("<") ? { model } : {};
 }
 
 export type SessionEvent =
@@ -195,10 +198,14 @@ export function createResponseReader(agent: AgentKind, sessionPath: string): (en
 		return entry => {
 			const e = record(entry);
 			const payload = record(e?.payload);
-			if (e?.type === "turn_context" && typeof payload?.model === "string") {
-				if (typeof payload.turn_id !== "string") { untagged = payload.model; return null; }
+			// The latest context applies, even one without a usable model: a turn
+			// never borrows another turn's model, and only usable IDs are kept.
+			if (e?.type === "turn_context") {
+				const { model } = recordedModel(payload?.model);
+				if (typeof payload?.turn_id !== "string") { untagged = model; return null; }
 				untagged = undefined;
-				turnModels.delete(payload.turn_id); turnModels.set(payload.turn_id, payload.model);
+				turnModels.delete(payload.turn_id);
+				if (model) turnModels.set(payload.turn_id, model);
 				while (turnModels.size > 64) turnModels.delete(turnModels.keys().next().value!);
 				return null;
 			}
@@ -207,7 +214,7 @@ export function createResponseReader(agent: AgentKind, sessionPath: string): (en
 			if (typeof markdown !== "string" || !markdown.trim()) return null;
 			const turn = typeof payload.turn_id === "string" ? payload.turn_id : String(e.timestamp ?? Date.now());
 			const model = (typeof payload.turn_id === "string" ? turnModels.get(payload.turn_id) : undefined) ?? untagged;
-			return { agent, key: `codex:${turn}`, markdown, ...recordedModel(model), time: entryTime(e.timestamp, Date.now()), sessionPath };
+			return { agent, key: `codex:${turn}`, markdown, ...(model ? { model } : {}), time: entryTime(e.timestamp, Date.now()), sessionPath };
 		};
 	}
 	return entry => {

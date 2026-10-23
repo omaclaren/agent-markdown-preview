@@ -313,8 +313,12 @@ interface ViewOptions {
 async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	const markdownFor = (response: AgentResponse) => {
 		const caption = options.caption?.(response);
-		// The render pipeline does not pass raw HTML through, so the caption is Markdown.
-		return caption ? `*${caption.replace(/[\\`*_[\]<>#|~$]/g, "\\$&")}*\n\n${response.markdown}` : response.markdown;
+		// The render pipeline does not pass raw HTML through, so the caption is
+		// Markdown: one line, with all ASCII punctuation as character references so
+		// that it reads as recorded (no entities, links, math or smart quotes).
+		// Backslash escapes are not enough: the math step pairs \( and \[ with a
+		// closing delimiter anywhere later, even in the answer.
+		return caption ? `*${caption.replace(/\s+/g, " ").trim().replace(/[!-/:-@[-`{-~]/g, c => `&#${c.charCodeAt(0)};`)}*\n\n${response.markdown}` : response.markdown;
 	};
 	const detailsFor = (response?: AgentResponse) => options.turnDetails && response ? async (signal: AbortSignal) => {
 		if (response.agent !== "opencode") return readTurnDetails(response.sessionPath, response.agent, response, signal);
@@ -360,7 +364,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	if (seeded[0]) rememberTheme(1, seeded[0].response);
 	for (const { html, response } of seeded.slice(1)) rememberTheme(server.updateDocument(html, { appendToHistory: true, turnDetails: detailsFor(response), responseKey: response.key }), response);
 	const shown = seeded.at(-1)?.response;
-	let shownKey = shown?.key ?? null, shownMarkdown = shown?.markdown ?? "", closed = false;
+	let shownKey = shown?.key ?? null, shownMarkdown = shown?.markdown ?? "", shownModel = shown?.model, closed = false;
 	let queue = Promise.resolve();
 	return {
 		url: server.url,
@@ -368,10 +372,12 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		get clientCount() { return server.clientCount; },
 		get shownKey() { return shownKey; },
 		show(response) {
-			if (closed || (response.key === shownKey && response.markdown === shownMarkdown)) return;
+			// The caption names the model, so a model-only change revises it too.
+			if (closed || (response.key === shownKey && response.markdown === shownMarkdown && response.model === shownModel)) return;
 			const appendToHistory = response.key !== shownKey;
 			shownKey = response.key;
 			shownMarkdown = response.markdown;
+			shownModel = response.model;
 			queue = queue.then(async () => {
 				if (closed) return;
 				try {

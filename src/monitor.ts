@@ -187,7 +187,7 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 					lastSnapshot = snapshot;
 					lastError = "";
 					const old = new Map(state.history.map(response => [response.key, response]));
-					const responses = snapshot.history.filter(response => old.get(response.key)?.markdown !== response.markdown);
+					const responses = snapshot.history.filter(response => old.get(response.key)?.markdown !== response.markdown || old.get(response.key)?.model !== response.model);
 					const dirty = responses.length > 0 || state.history.length !== snapshot.history.length || state.title !== snapshot.title
 						|| state.working !== snapshot.working || state.lastActivity !== snapshot.lastActivity;
 					state.title = snapshot.title;
@@ -201,7 +201,9 @@ export function createSessionMonitor(options: MonitorOptions): SessionMonitor {
 						const order = snapshot.order.get(response.key);
 						const advanced = order !== undefined && seenOrder !== undefined && typeof order === typeof seenOrder
 							? order > seenOrder : response.time >= seenTime;
-						const fresh = initialized ? old.has(response.key) || advanced : backfillIsFresh(response);
+						// A model-only change revises a shown caption in place, never as a new answer.
+						const fresh = old.get(response.key)?.markdown === response.markdown ? false
+							: initialized ? old.has(response.key) || advanced : backfillIsFresh(response);
 						notifyResponse(response, fresh);
 					}
 					const newestOrder = state.latest && snapshot.order.get(state.latest.key);

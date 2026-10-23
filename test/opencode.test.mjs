@@ -165,6 +165,10 @@ test("OpenCode v1-only SQLite: final text parts, not tool calls, reasoning, comp
 	f.db.prepare("UPDATE part SET data=? WHERE message_id='msg_005'").run(JSON.stringify({ type: "text", text: "finished" }));
 	snapshot = await f.store.snapshot(f.source("ses_old"));
 	assert.equal(snapshot.history.at(-1).markdown, "finished"); assert.equal(snapshot.working, false);
+	// json_extract returns objects and arrays as JSON text: neither is a model, nor is an overlong string.
+	f.v1("ses_old", "msg_006", "object", { modelID: { name: "not-a-string" } }); f.v1("ses_old", "msg_007", "array", { modelID: ["not-a-string"] }); f.v1("ses_old", "msg_008", "long", { modelID: "x".repeat(101) });
+	snapshot = await f.store.snapshot(f.source("ses_old"));
+	assert.deepEqual(snapshot.history.slice(-3).map(r => [r.markdown, "model" in r]), [["object", false], ["array", false], ["long", false]]);
 });
 
 test("OpenCode v2-only: seq order, idle settlement, one answer per turn, no tools or reasoning", async t => {
@@ -182,6 +186,10 @@ test("OpenCode v2-only: seq order, idle settlement, one answer per turn, no tool
 	assert.equal(snapshot.history[0].model, "gpt-5.1-codex");
 	f.v2("ses_new", "msg_0", 6, "compaction", { status: "completed", summary: "not an answer" });
 	assert.deepEqual((await f.store.snapshot(f.source("ses_new"))).history, snapshot.history);
+	f.v2("ses_new", "msg_c", 7, "assistant", f.answer("Object model", Date.now(), { model: { id: { name: "not-a-string" } } })); f.v2("ses_new", "msg_d", 8, "idle", { outcome: "succeeded" });
+	f.v2("ses_new", "msg_e", 9, "assistant", f.answer("Array model", Date.now(), { model: { id: ["not-a-string"] } })); f.v2("ses_new", "msg_f", 10, "idle", { outcome: "succeeded" });
+	snapshot = await f.store.snapshot(f.source("ses_new"));
+	assert.deepEqual(snapshot.history.slice(-2).map(r => [r.markdown, "model" in r]), [["Object model", false], ["Array model", false]]);
 });
 
 test("OpenCode migrated history: retain multiple imported answers before the first v2 idle", async t => {
@@ -279,9 +287,13 @@ test("OpenCode monitor: startup suppression, live idle, revisions, discovery, ti
 	await until(() => responses.length === 2, "idle answer"); assert.equal(responses[1].fresh, true);
 	f.db.prepare("UPDATE session_message SET data=? WHERE id='msg_4'").run(JSON.stringify(f.answer("revised final")));
 	await until(() => responses.length === 3, "revision"); assert.equal(responses[2].key, responses[1].key); assert.equal(monitor.sessions()[0].responseCount, 2);
+	// A model-only change revises the answer in place: reported, but not as a fresh answer.
+	f.db.prepare("UPDATE session_message SET data=? WHERE id='msg_4'").run(JSON.stringify(f.answer("revised final", Date.now(), { model: { id: "gpt-5.2" } })));
+	await until(() => responses.length === 4, "model-only revision");
+	assert.deepEqual([responses[3].key, responses[3].fresh, monitor.sessions()[0].latest.model, monitor.sessions()[0].responseCount], [responses[1].key, false, "gpt-5.2", 2]);
 	f.v2("ses_live", "msg_skewed", 6, "assistant", f.answer("clock moved backwards", Date.now() - 60_000));
 	f.v2("ses_live", "msg_skewedidle", 7, "idle", { time: { created: Date.now() - 59_000 }, outcome: "succeeded" });
-	await until(() => responses.length === 4, "backdated live answer"); assert.equal(responses[3].fresh, true, "live delivery uses sequence, not wall-clock time");
+	await until(() => responses.length === 5, "backdated live answer"); assert.equal(responses[4].fresh, true, "live delivery uses sequence, not wall-clock time");
 	f.session(2, "ses_later"); f.v2("ses_later", "msg_later", 1, "assistant", f.answer("later")); f.v2("ses_later", "msg_idle", 2, "idle", { outcome: "succeeded" });
 	await until(() => responses.some(r => r.text === "later" && r.fresh), "new session");
 	monitor.close(); const count = responses.length;
@@ -319,8 +331,17 @@ test("OpenCode index, merged/per-session previews, ID pinning and CLI database o
 	const pinned = await startResponseWatch({ ...options, sessionPath: "ses_view" }); t.after(() => pinned.close()); urls.push(pinned.url);
 	for (const url of urls) assert.match(await (await fetch(url)).text(), /<strong>Rendered<\/strong>/);
 	await assert.rejects(startResponseWatch({ ...options, sessionPath: "ses_missing" }), /was not found/);
-	f.v2("ses_view", "msg_final", 3, "assistant", f.answer("After the idle marker")); f.v2("ses_view", "msg_finalidle", 4, "idle", { outcome: "succeeded" });
+	const finalAt = Date.now();
+	f.v2("ses_view", "msg_final", 3, "assistant", f.answer("After the idle marker", finalAt, { model: { id: "gpt-5.1" } })); f.v2("ses_view", "msg_finalidle", 4, "idle", { outcome: "succeeded" });
 	for (const url of urls) await until(async () => (await (await fetch(url)).text()).includes("After the idle marker"), "live rendered view");
+	// The caption names the model: a model-only change revises it in place, not as another answer.
+	const pinnedPage = async () => (await fetch(pinned.url)).text();
+	const revisionCount = async () => JSON.parse((await pinnedPage()).match(/let revisions = (\[[^\]]*\])/)[1]).length;
+	assert.match(await pinnedPage(), /<em>OpenCode \w+ · GPT-5\.1 · /);
+	const revisions = await revisionCount();
+	f.db.prepare("UPDATE session_message SET data=? WHERE id='msg_final'").run(JSON.stringify(f.answer("After the idle marker", finalAt, { model: { id: "gpt-5.2" } })));
+	await until(async () => /<em>OpenCode \w+ · GPT-5\.2 · /.test(await pinnedPage()), "model-only caption revision");
+	assert.equal(await revisionCount(), revisions);
 
 	const cli = spawn(process.execPath, [fileURLToPath(new URL("../dist/cli.js", import.meta.url)), "--agent", "opencode", "--session", "ses_view", "--opencode-db", f.path, "--cwd", f.cwd, "--no-open"], { env: { ...process.env, AGENT_MARKDOWN_PREVIEW_HOME: join(f.base, "state") }, stdio: ["ignore", "pipe", "pipe"] });
 	let output = "", errors = ""; cli.stdout.on("data", chunk => output += chunk); cli.stderr.on("data", chunk => errors += chunk);
