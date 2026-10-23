@@ -123,9 +123,10 @@ const HISTORY = 20;
 const CANDIDATES = 256;
 const safeData = "CASE WHEN json_valid(data) THEN data ELSE '{}' END";
 const field = (name: string) => `json_extract(${safeData}, '$.${name}')`;
-// json_extract returns objects and arrays as JSON text: a model ID is read only
-// as a string, within recordedModel's length bound.
-const modelField = (name: string) => `CASE WHEN json_type(${safeData},'$.${name}')='text' AND length(${field(name)})<=100 THEN ${field(name)} END`;
+// json_extract returns objects and arrays as JSON text, and a string reaches
+// JavaScript cut at its first NUL: a model ID is read only as a string without
+// NUL, within recordedModel's length bound.
+const modelField = (name: string) => `CASE WHEN json_type(${safeData},'$.${name}')='text' AND instr(${field(name)},char(0))=0 AND length(${field(name)})<=100 THEN ${field(name)} END`;
 const completed = `${field("time.completed")} IS NOT NULL AND ${field("finish")} IN ('stop','length','content-filter') AND ${field("error")} IS NULL AND COALESCE(${field("summary")},0) = 0`;
 
 export function createOpenCodeStore(databasePath: string): OpenCodeStore {
