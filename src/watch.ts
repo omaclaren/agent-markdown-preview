@@ -20,6 +20,7 @@ import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { isHtmlPagePath } from "./shared/html-page-preview.js";
 import { readLinkedDocument } from "./shared/read-linked-document.js";
 import { readRecordTail, readTurnDetails } from "./shared/read-turn-details.js";
+import { replSnapshotMarkdown } from "./shared/repl-snapshot.js";
 import { createLiveTurnProjector } from "./shared/turn-details.js";
 import { AGENT_PAGE_STYLE, applyPreviewAppearance } from "./shared/agent-page-style.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
@@ -325,10 +326,19 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		const store = createOpenCodeStore(response.sessionPath.slice(0, response.sessionPath.lastIndexOf("#")));
 		try { return await store.turnDetails(response, signal); } finally { store.close(); }
 	} : undefined;
+	// With Working enabled, Preview also folds in the REPL code the agent ran in
+	// that turn and its recorded output. That is tool output, so it needs Working.
+	const replSnapshot = async (response: AgentResponse) => {
+		const details = detailsFor(response);
+		if (!details) return "";
+		try { return replSnapshotMarkdown((await details(AbortSignal.timeout(10_000))).events); }
+		catch (error) { options.log(`Could not read the REPL submissions of a ${AGENT_LABELS[response.agent]} response: ${errorMessage(error)}`); return ""; }
+	};
 	const responseTheme = (response: AgentResponse) => options.agentThemes?.[response.agent] ?? options;
 	const render = async (response: AgentResponse) => {
 		const { style, finish } = responseTheme(response);
-		return finish((await renderPreviewHtmlDocument(markdownFor(response), style, options.cwd, false, options.fontSizePx)).html);
+		const repl = await replSnapshot(response);
+		return finish((await renderPreviewHtmlDocument(repl ? `${markdownFor(response)}\n\n${repl}` : markdownFor(response), style, options.cwd, false, options.fontSizePx)).html);
 	};
 	// Keep linked documents tied to their source revision in mixed-agent history.
 	// Stores theme objects only, not response text. More than the server's retained history.

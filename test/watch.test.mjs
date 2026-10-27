@@ -310,6 +310,29 @@ test("captions read exactly as recorded: no entities, links, citations, markup o
 	assert.equal(text.replace(/ · [^·]+$/, ""), `Claude Code bbbb · ${model} · ${title}`);
 });
 
+test("with Working, a response folds in the REPL code its turn ran; without Working it does not", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	const code = "import math\nprint(math.pi)\nprint('\\[ x \\]')";
+	const record = (uuid, parentUuid, type, message, offset) => line({ type, uuid, parentUuid, timestamp: iso(offset), message });
+	const session = join(f.claudeDir, "00000000-0000-4000-8000-00000000cccc.jsonl");
+	writeFileSync(session, record("u", null, "user", { role: "user", content: "What is pi?" }, -4_000)
+		+ record("a", "u", "assistant", { id: "m1", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "mcp__agent-repl__repl_send", input: { code, target: "python" } }] }, -3_000)
+		+ record("r", "a", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: `Submitted code:\n${code}\n\nOutput:\n3.141592653589793\n\\[ x \\]\n` }] }] }, -2_000)
+		+ record("f", "r", "assistant", { id: "m2", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Pi is about 3.14." }] }, -1_000));
+	const working = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["claude"], turnDetails: true, ...fast });
+	t.after(() => working.close());
+	const html = await page(working.url);
+	assert.match(html, /Pi is about 3\.14\.[^]*<details[^>]*>\s*<summary>REPL · Python · 1 submission in this turn<\/summary>/);
+	assert.match(html, /<pre[^>]*class="[^"]*python[^"]*"[^]*import[^]*math[^]*<\/pre>/, "the code is highlighted as Python");
+	assert.match(html, /3\.141592653589793\n\\\[ x \\\]/, "the output is shown literally");
+	assert.doesNotMatch(html, /<math/, "recorded \\[ \\] in code and output is never read as math");
+	const plain = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["claude"], ...fast });
+	t.after(() => plain.close());
+	const preview = await page(plain.url);
+	assert.match(preview, /Pi is about 3\.14\./);
+	assert.doesNotMatch(preview, /REPL ·|3\.141592653589793/, "tool output needs Working");
+});
+
 test("a restarted preview notices a reconnecting tab instead of needing a new one", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
 	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("a1", "Hi", iso(-1_000)));
