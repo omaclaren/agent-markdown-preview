@@ -43,6 +43,30 @@ test("a later section's prefix is one no first-section ID starts with, so the an
 	}
 });
 
+test("an unclosed <div> is shown as text, so its ID can't collide with a later section's or escape a section's prefix", { skip }, async () => {
+	const note = "Note[^n]\n\n[^n]: SECOND_NOTE\n";
+	for (const sections of [["<div id='s1-fn1'>\n\nBody\n", note], ["<div ID=s1-fn1>\n\nBody\n", note], ["Answer\n", '<div id="target">\n\nx\n', '<div id="target">\n\ny\n']]) {
+		const { html } = await renderPreviewHtmlDocument(sections, styleForMode("light"), process.cwd(), false, 16);
+		// Only IDs in tags: the text shown, <div id="target">, has its quotes unescaped.
+		const ids = [...body(html).matchAll(/<[a-z][^<>]*\sid="([^"]+)"/g)].map(match => match[1]);
+		assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), [], `${JSON.stringify(sections[0])}: no duplicate IDs`);
+		assert.doesNotMatch(body(html), /<div\b[^>]*\bid\s*=\s*["']?(?:s1-fn1|target)\b/i, "an unclosed <div> keeps no ID");
+		assert.match(body(html), /&lt;div (?:id|ID)=/, "it is shown as text");
+		if (sections[1] === note) assert.match(html, /href="#s1-fn1" class="footnote-ref"[^]*id="s1-fn1"[^>]*>[^]*?SECOND_NOTE/, "the later section keeps s1-, and its note link works");
+	}
+});
+
+test("a free prefix is found in one pass over the first section's IDs, however many prefixes they take", { skip, timeout: 120_000 }, async () => {
+	const answer = `# s1-fn1\n\n${Array.from({ length: 32_768 }, (_, k) => `[]{#s1-${k + 1}-}`).join(" ")}\n`;
+	let last = performance.now(), gap = 0;
+	const heartbeat = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now; }, 10);
+	let html;
+	try { ({ html } = await renderPreviewHtmlDocument([answer, "Note[^n]\n\n[^n]: SECOND_NOTE\n"], styleForMode("light"), process.cwd(), false, 16)); }
+	finally { clearInterval(heartbeat); }
+	assert.match(html, /href="#s1-32769-fn1" class="footnote-ref"/);
+	assert.ok(gap < 2000, `the event loop was blocked for ${Math.round(gap)} ms`);
+});
+
 test("annotation placeholders are never substituted inside code, highlighted or not, in one section or several", { skip: skip || (!browserPath && "no test browser"), timeout: 30_000 }, async t => {
 	const dir = mkdtempSync(join(tmpdir(), "amp-sections-"));
 	const { default: puppeteer } = await import("puppeteer-core");
