@@ -1010,7 +1010,7 @@ function normalizeMarkdownFencedBlocks(markdown: string): string {
 	return out.join("\n");
 }
 
-function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean, placeholderPrefix = PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX): {
+function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean): {
 	normalizedMarkdown: string;
 	pandocMarkdown: string;
 	annotationPlaceholders: PreviewAnnotationPlaceholder[];
@@ -1021,7 +1021,7 @@ function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean, plac
 		return { normalizedMarkdown, pandocMarkdown: normalizedMarkdown, annotationPlaceholders: [] };
 	}
 
-	const prepared = prepareMarkdownForPandocPreview(normalizedMarkdown, placeholderPrefix) as {
+	const prepared = prepareMarkdownForPandocPreview(normalizedMarkdown, PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX) as {
 		markdown?: string;
 		placeholders?: PreviewAnnotationPlaceholder[];
 	};
@@ -1037,7 +1037,6 @@ async function renderMarkdownToHtmlWithPandoc(
 	resourcePath?: string,
 	isLatex?: boolean,
 	signal?: AbortSignal,
-	idPrefix?: string,
 ): Promise<string> {
 	const pandocInput = isLatex ? markdown : normalizeMarkdownFencedBlocks(markdown);
 	const inputFormat = isLatex ? "latex" : "markdown+lists_without_preceding_blankline-blank_before_blockquote-blank_before_header+tex_math_dollars+autolink_bare_uris-raw_html-raw_attribute";
@@ -1046,15 +1045,13 @@ async function renderMarkdownToHtmlWithPandoc(
 	// Last, for every input (LaTeX too): no event-handler attributes or script URLs.
 	args.push(`--lua-filter=${PANDOC_SAFE_HTML_FILTER_PATH}`);
 	if (resourcePath) args.push(`--resource-path=${resourcePath}`);
-	if (idPrefix) args.push(`--id-prefix=${idPrefix}`);
 
 	const result = await runPandocProcess(args, pandocInput, {
 		label: "pandoc HTML render",
 		signal,
 		timeoutMs: DEFAULT_PANDOC_RENDER_TIMEOUT_MS,
 	});
-	// --id-prefix covers every ID but the footnotes section's own.
-	if (result.code === 0) return idPrefix ? result.stdout.toString("utf-8").replace(/<section id="footnotes"/g, `<section id="${idPrefix}footnotes"`) : result.stdout.toString("utf-8");
+	if (result.code === 0) return result.stdout.toString("utf-8");
 	const stderr = result.stderr.toString("utf-8").trim();
 	throw new Error(`pandoc failed with ${formatProcessExit(result.code, result.signal)}${stderr ? `: ${stderr}` : ""}`);
 }
@@ -2239,16 +2236,8 @@ ${buildMermaidBrowserModule(mermaidConfigJson, mermaidIconPacksJson)}
 </html>`;
 }
 
-/**
- * `markdown` can be several sections. Each is parsed on its own and the HTML joined,
- * so a fence or block left open in one cannot change how the next one parses. Later
- * sections prefix their element IDs and internal links (s1-, s2-, …) so footnotes and
- * code lines stay distinct; the first keeps its own, and a later section whose prefix
- * one of them starts with gets another (s1-1-, …). Figures are numbered and
- * cross-referenced per section.
- */
 async function renderPreviewHtmlDocument(
-	markdown: string | readonly string[],
+	markdown: string,
 	style: PreviewStyle,
 	resourcePath?: string,
 	isLatex?: boolean,
@@ -2257,25 +2246,8 @@ async function renderPreviewHtmlDocument(
 	inlineLocalPdfData = false,
 ): Promise<{ html: string; normalizedMarkdown: string; fontSizePx: number }> {
 	const previewFontSizePx = normalizePreviewFontSizePx(fontSizePx, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX);
-	// Later sections get their own annotation placeholder tokens; all share the prefix the page looks for.
-	const sections = (typeof markdown === "string" ? [markdown] : markdown).map((section, i) =>
-		prepareBrowserPreviewMarkdown(section, isLatex, i ? `${PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX}S${i}X` : PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX));
-	const fragments = await Promise.all(sections.map((section, i) => renderMarkdownToHtmlWithPandoc(section.pandocMarkdown, resourcePath, isLatex, signal, i ? `s${i}-` : undefined)));
-	// The first section's IDs are unprefixed, so one can start with a later section's prefix (a
-	// heading "s1-fn1"); that section is parsed again with a prefix none of them starts with.
-	// Pandoc writes every ID as id="…" (raw HTML is shown as text; a tag shown as text can match
-	// too, which costs only a reparse). Each is indexed once by the prefixes it starts with:
-	// "s1-fn1" by s1-, "s1-2-x" by s1- and s1-2-.
-	const taken = new Set(fragments.length > 1 ? [...fragments[0].matchAll(/\sid="s(\d+)-(?:(\d+)-)?/g)].flatMap(([, i, n]) => n === undefined ? [`s${i}-`] : [`s${i}-`, `s${i}-${n}-`]) : []);
-	await Promise.all(sections.map(async (section, i) => {
-		if (!i || !taken.has(`s${i}-`)) return;
-		let n = 1;
-		while (taken.has(`s${i}-${n}-`)) n++;
-		fragments[i] = await renderMarkdownToHtmlWithPandoc(section.pandocMarkdown, resourcePath, isLatex, signal, `s${i}-${n}-`);
-	}));
-	const fragmentHtml = markPandocPdfEmbeds(fragments.join("\n"));
-	const normalizedMarkdown = sections.map(section => section.normalizedMarkdown).join("\n\n");
-	const annotationPlaceholders = sections.flatMap(section => section.annotationPlaceholders);
+	const { normalizedMarkdown, pandocMarkdown, annotationPlaceholders } = prepareBrowserPreviewMarkdown(markdown, isLatex);
+	const fragmentHtml = markPandocPdfEmbeds(await renderMarkdownToHtmlWithPandoc(pandocMarkdown, resourcePath, isLatex, signal));
 	const inlinePdfData = inlineLocalPdfData
 		? await collectInlineLocalPdfData(fragmentHtml, resourcePath, signal)
 		: {};
