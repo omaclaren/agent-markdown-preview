@@ -87,7 +87,7 @@ A preview shows the final response of each turn: the text the agent writes after
 
 ### Links to local files
 
-Links to local files open in the same tab, and Back returns you to where you were. Relative links in a response resolve against the project directory, and links inside a file against the file's directory. Markdown, LaTeX, text and code open as rendered snapshots (refresh to reread them). Images, PDFs and HTML pages open in the browser, with HTML run in a sandbox. Other files and folders open a page with buttons to show them in their folder, open them in their default app, or copy the path. Each link also has **Copy local path** and **⋯ File actions** beside it.
+Links to local files open in the same tab, and Back returns you to where you were. A rendered file also has **← Return to preview**, or press **Option/Alt+Left**, to go back to the response you opened it from. Relative links in a response resolve against the project directory, and links inside a file against the file's directory. Markdown, LaTeX, text and code open as rendered snapshots (refresh to reread them). Images, PDFs and HTML pages open in the browser, with HTML run in a sandbox. Other files and folders open a page with buttons to show them in their folder, open them in their default app, or copy the path. Each link also has **Copy local path** and **⋯ File actions** beside it.
 
 These actions run on the machine hosting the preview, and opening a file in its default app can run it. Anyone with a preview's link can use them, so share the link only with people you trust.
 

@@ -143,7 +143,8 @@ test("linked file previews resolve nested links and images from the file, reread
 	for (const url of [new URL(nestedImageLink, watch.url), ...links.slice(9)]) {
 		const imagePage = await (await fetch(url, { headers })).text();
 		assert.match(imagePage, /<title>figure.png — Agent Markdown Preview<\/title>/);
-		assert.match(imagePage, /Return to preview/);
+		assert.match(imagePage, /<a href="[^"]+" title="Return to preview \(Option\/Alt\+Left\)" aria-keyshortcuts="Alt\+ArrowLeft">← Return to preview<\/a>/);
+		assert.match(imagePage, /<script nonce="[^"]+">history\.scrollRestoration='auto';addEventListener\('keydown'/, "Option/Alt+Left does what the link does");
 		const resource = imagePage.match(/<img\b[^>]*src="([^"]+)"/)[1];
 		assert.deepEqual(Buffer.from(await (await fetch(new URL(resource, watch.url), { headers })).arrayBuffer()), png);
 	}
