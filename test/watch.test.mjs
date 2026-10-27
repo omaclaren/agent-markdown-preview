@@ -333,6 +333,27 @@ test("with Working, a response folds in the REPL code its turn ran; without Work
 	assert.doesNotMatch(preview, /REPL ·|3\.141592653589793/, "tool output needs Working");
 });
 
+test("an answer that leaves a fence open cannot change how the REPL snapshot after it parses", { skip, timeout: 30_000 }, async t => {
+	const f = fixture();
+	// Valid Python whose string holds a three-backtick fence and a Markdown heading.
+	const code = "s = '''\n```\n# RECORDED_HEADING\n```\n'''";
+	const record = (uuid, parentUuid, type, message, offset) => line({ type, uuid, parentUuid, timestamp: iso(offset), message });
+	for (const [i, open] of ["```python", "~~~"].entries()) {
+		const session = join(f.claudeDir, `00000000-0000-4000-8000-00000000ccd${i}.jsonl`);
+		writeFileSync(session, record("u", null, "user", { role: "user", content: "Show me" }, -4_000)
+			+ record("a", "u", "assistant", { id: "m1", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "mcp__agent-repl__repl_send", input: { code } }] }, -3_000)
+			+ record("r", "a", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: `Submitted code:\n${code}\n\nOutput:\nSAFE_LITERAL_OUTPUT` }] }, -2_000)
+			+ record("f", "r", "assistant", { id: "m2", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: `Answer.\n\n${open}\n` }] }, -1_000));
+		const watch = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), sessionPath: session, agents: ["claude"], turnDetails: true, ...fast });
+		t.after(() => watch.close());
+		const html = await page(watch.url);
+		assert.doesNotMatch(html, /<h1[^>]*>\s*RECORDED_HEADING/, `${open}: recorded text never becomes a heading`);
+		assert.match(html, /<details[^>]*>\s*<summary>REPL · Python · 1 submission in this turn<\/summary>/, `${open}: the snapshot is still its own folded block`);
+		assert.match(html, /# RECORDED_HEADING/, `${open}: the recorded line is shown literally`);
+		assert.match(html, /SAFE_LITERAL_OUTPUT/);
+	}
+});
+
 test("a restarted preview notices a reconnecting tab instead of needing a new one", { skip, timeout: 30_000 }, async t => {
 	const f = fixture();
 	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("a1", "Hi", iso(-1_000)));

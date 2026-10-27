@@ -331,14 +331,15 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 	const replSnapshot = async (response: AgentResponse) => {
 		const details = detailsFor(response);
 		if (!details) return "";
-		try { return replSnapshotMarkdown((await details(AbortSignal.timeout(10_000))).events); }
+		try { return replSnapshotMarkdown(await details(AbortSignal.timeout(10_000))); }
 		catch (error) { options.log(`Could not read the REPL submissions of a ${AGENT_LABELS[response.agent]} response: ${errorMessage(error)}`); return ""; }
 	};
 	const responseTheme = (response: AgentResponse) => options.agentThemes?.[response.agent] ?? options;
 	const render = async (response: AgentResponse) => {
 		const { style, finish } = responseTheme(response);
 		const repl = await replSnapshot(response);
-		return finish((await renderPreviewHtmlDocument(repl ? `${markdownFor(response)}\n\n${repl}` : markdownFor(response), style, options.cwd, false, options.fontSizePx)).html);
+		// A separate section, so an answer that leaves a fence or <details> open can't change how it parses.
+		return finish((await renderPreviewHtmlDocument(repl ? [markdownFor(response), repl] : markdownFor(response), style, options.cwd, false, options.fontSizePx)).html);
 	};
 	// Keep linked documents tied to their source revision in mixed-agent history.
 	// Stores theme objects only, not response text. More than the server's retained history.

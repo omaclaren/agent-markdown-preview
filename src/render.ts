@@ -1010,7 +1010,7 @@ function normalizeMarkdownFencedBlocks(markdown: string): string {
 	return out.join("\n");
 }
 
-function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean): {
+function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean, placeholderPrefix = PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX): {
 	normalizedMarkdown: string;
 	pandocMarkdown: string;
 	annotationPlaceholders: PreviewAnnotationPlaceholder[];
@@ -1021,7 +1021,7 @@ function prepareBrowserPreviewMarkdown(markdown: string, isLatex?: boolean): {
 		return { normalizedMarkdown, pandocMarkdown: normalizedMarkdown, annotationPlaceholders: [] };
 	}
 
-	const prepared = prepareMarkdownForPandocPreview(normalizedMarkdown, PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX) as {
+	const prepared = prepareMarkdownForPandocPreview(normalizedMarkdown, placeholderPrefix) as {
 		markdown?: string;
 		placeholders?: PreviewAnnotationPlaceholder[];
 	};
@@ -2235,8 +2235,12 @@ ${buildMermaidBrowserModule(mermaidConfigJson, mermaidIconPacksJson)}
 </html>`;
 }
 
+/**
+ * `markdown` can be several sections. Each is parsed on its own and the HTML joined,
+ * so a fence or block left open in one cannot change how the next one parses.
+ */
 async function renderPreviewHtmlDocument(
-	markdown: string,
+	markdown: string | readonly string[],
 	style: PreviewStyle,
 	resourcePath?: string,
 	isLatex?: boolean,
@@ -2245,8 +2249,13 @@ async function renderPreviewHtmlDocument(
 	inlineLocalPdfData = false,
 ): Promise<{ html: string; normalizedMarkdown: string; fontSizePx: number }> {
 	const previewFontSizePx = normalizePreviewFontSizePx(fontSizePx, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX);
-	const { normalizedMarkdown, pandocMarkdown, annotationPlaceholders } = prepareBrowserPreviewMarkdown(markdown, isLatex);
-	const fragmentHtml = markPandocPdfEmbeds(await renderMarkdownToHtmlWithPandoc(pandocMarkdown, resourcePath, isLatex, signal));
+	// Later sections get their own annotation placeholder tokens; all share the prefix the page looks for.
+	const sections = (typeof markdown === "string" ? [markdown] : markdown).map((section, i) =>
+		prepareBrowserPreviewMarkdown(section, isLatex, i ? `${PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX}S${i}X` : PREVIEW_ANNOTATION_PLACEHOLDER_PREFIX));
+	const fragments = await Promise.all(sections.map(section => renderMarkdownToHtmlWithPandoc(section.pandocMarkdown, resourcePath, isLatex, signal)));
+	const fragmentHtml = markPandocPdfEmbeds(fragments.join("\n"));
+	const normalizedMarkdown = sections.map(section => section.normalizedMarkdown).join("\n\n");
+	const annotationPlaceholders = sections.flatMap(section => section.annotationPlaceholders);
 	const inlinePdfData = inlineLocalPdfData
 		? await collectInlineLocalPdfData(fragmentHtml, resourcePath, signal)
 		: {};
