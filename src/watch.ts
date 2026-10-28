@@ -20,14 +20,16 @@ import { createBrowserWatchServer } from "./shared/browser-watch-server.js";
 import { isHtmlPagePath } from "./shared/html-page-preview.js";
 import { readLinkedDocument } from "./shared/read-linked-document.js";
 import { readRecordTail, readTurnDetails } from "./shared/read-turn-details.js";
+import { createReplLiveSource } from "./shared/repl-live.js";
 import { createLiveTurnProjector } from "./shared/turn-details.js";
 import { AGENT_PAGE_STYLE, applyPreviewAppearance } from "./shared/agent-page-style.js";
 import { createSlotStore, defaultStateDir, startAtSlot, type SlotStore } from "./slots.js";
 
 const PAGE_TEXT = { titleSuffix: "Agent Markdown Preview", expiredHint: "Run agent-markdown-preview again for a fresh link." };
 /** Remembered addresses make restarted previews reconnect; `null` disables. */
-const slotStore = (stateDir: string | null | undefined, turnDetails = false, live = false): SlotStore | null => {
-	if (stateDir === null) return null;
+const slotStore = (stateDir: string | null | undefined, turnDetails = false, live = false, repl = false): SlotStore | null => {
+	// The REPL page shows future submissions too, so its links never outlive the process.
+	if (stateDir === null || repl) return null;
 	const store = createSlotStore(stateDir ?? defaultStateDir());
 	if (!turnDetails && !live) return store;
 	// Previously shared ordinary-preview or Working links must not gain trace or live access.
@@ -292,6 +294,8 @@ interface ViewOptions {
 	turnDetails?: boolean;
 	/** Live recorded activity for this view's single session. */
 	live?: LiveSource;
+	/** The shared REPL sessions' page (opt-in). */
+	repl?: ReturnType<typeof createReplLiveSource>;
 	style: PreviewStyle;
 	fontSizePx: number;
 	label: string;
@@ -356,6 +360,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		initialTurnDetails: detailsFor(seeded[0]?.response),
 		initialResponseKey: seeded[0]?.response.key,
 		...(options.live ? { live: options.live } : {}),
+		...(options.repl ? { repl: options.repl } : {}),
 		renderLocalDocument: (path, signal, revision) => {
 			const { style, finish } = revisionThemes.get(revision ?? 1) ?? options;
 			return localDocumentRenderer(style, options.fontSizePx, finish)(path, signal);
@@ -407,6 +412,8 @@ interface CommonOptions {
 	turnDetails?: boolean;
 	/** Opt-in: follow a session's current turn as it is recorded (implies turnDetails). */
 	live?: boolean;
+	/** Opt-in: a page of the shared REPL sessions' recent recorded submissions. */
+	repl?: boolean;
 	style: PreviewStyle;
 	/** Cross-project grouped index; response watches stay folder-scoped. */
 	allProjects?: boolean;
@@ -484,7 +491,7 @@ function captionFor(monitor: SessionMonitor) {
 /** Creates the merged view over all monitored sessions (or one pinned session). */
 async function mergedView(monitor: SessionMonitor, base: { cwd: string; fontSizePx: number; agents: AgentKind[] }, options: CommonOptions, label: string, slotKey: string, live?: LiveSource) {
 	return createResponseView({
-		slots: slotStore(options.stateDir, options.turnDetails, options.live), slotKey, turnDetails: options.turnDetails, live, ...themeFor(options, base.fontSizePx),
+		slots: slotStore(options.stateDir, options.turnDetails, options.live, options.repl), slotKey, turnDetails: options.turnDetails, live, repl: options.repl ? createReplLiveSource() : undefined, ...themeFor(options, base.fontSizePx),
 		cwd: base.cwd, fontSizePx: base.fontSizePx, label, history: recentAcross(monitor.sessions().filter(s => s.cwd === base.cwd), fillCount(options)),
 		waitingText: `Waiting for the next completed response from ${base.agents.map(a => AGENT_LABELS[a]).join(", ")} in ${base.cwd}…`,
 		caption: captionFor(monitor),
@@ -528,7 +535,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 	const overviewTheme = themeFor(options, 14);
 	const indexPage = applyPreviewAppearance(INDEX_PAGE, overviewTheme.finish(buildBrowserHtmlFromPandocFragment("", overviewTheme.style, undefined, [], 14)));
 	const log = options.log ?? (() => {});
-	const slots = slotStore(options.stateDir, options.turnDetails, options.live);
+	const slots = slotStore(options.stateDir, options.turnDetails, options.live, options.repl);
 	let token = "", lastPollAt = 0, closed = false;
 	const views = new Map<string, Promise<ResponseView>>();
 	const started = new Map<string, ResponseView>();
@@ -559,7 +566,7 @@ export async function startSessionIndex(options: CommonOptions): Promise<Running
 		if (!session && !project && !(id === "all" && !allProjects)) return null;
 		const resourceCwd = session?.cwd ?? project?.cwd ?? cwd;
 		const created = session
-			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && followsLive(session.agent) ? liveSourceFor(monitor, session) : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
+			? createResponseView({ cwd: resourceCwd, turnDetails: options.turnDetails, live: options.live && followsLive(session.agent) ? liveSourceFor(monitor, session) : undefined, repl: options.repl ? createReplLiveSource() : undefined, ...themeFor(options, base.fontSizePx), fontSizePx: base.fontSizePx, label: sessionLabel(session), history: session.history.slice(-fillCount(options)),
 				waitingText: `No completed response in this ${AGENT_LABELS[session.agent]} session yet.`, log, onRendered: options.onRendered,
 				caption: captionFor(monitor),
 				slots, slotKey: sessionKey(session) })

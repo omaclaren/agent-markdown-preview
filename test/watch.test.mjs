@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -170,6 +170,29 @@ test("previews update without an onRendered callback (as the CLI runs them)", { 
 	urls.push(merged.url);
 	appendFileSync(file, claudeAnswer("m2", "Second answer", iso(1_000)));
 	for (const url of urls) await waitFor(async () => /Second answer/.test(await page(url)), `update at ${url}`);
+});
+
+test("--repl: every view links the REPL page, and its links never outlive the process", { skip, timeout: 60_000 }, async t => {
+	const f = fixture();
+	const stateDir = join(f.base, "state");
+	writeFileSync(join(f.claudeDir, "00000000-0000-4000-8000-00000000aaaa.jsonl"), claudeAnswer("m1", "With the REPL page", iso(-60_000)));
+	const options = { cwd: f.cwd, roots: f.roots, style: styleForMode("light"), rescanMs: 100, tailIntervalMs: 40, stateDir, repl: true };
+	const openView = async (index, id) => (await fetch(new URL(`/open/${id}?token=${new URL(index.url).searchParams.get("token")}`, index.url), { redirect: "manual" })).headers.get("location");
+	const first = await startSessionIndex(options);
+	const token = new URL(first.url).searchParams.get("token");
+	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, first.url))).json()).sessions;
+	const sessionUrl = await openView(first, session.id);
+	assert.match(await page(sessionUrl), /data-watch-control="repl" href="[^"]*__pi_markdown_preview_repl__/, "a session preview links the REPL page");
+	assert.match(await page(await openView(first, "all")), /data-watch-control="repl"/, "so does the merged preview");
+	await first.close();
+	const second = await startSessionIndex(options);
+	t.after(() => second.close());
+	assert.notEqual(new URL(second.url).searchParams.get("token"), token, "a fresh index credential");
+	assert.notEqual(new URL(await openView(second, session.id)).searchParams.get("token"), new URL(sessionUrl).searchParams.get("token"), "and fresh preview credentials");
+	assert.ok(!existsSync(join(stateDir, "servers.json")) || !/"token"/.test(readFileSync(join(stateDir, "servers.json"), "utf8")), "nothing remembered");
+	const plain = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), agents: ["claude"], ...fast });
+	t.after(() => plain.close());
+	assert.doesNotMatch(await page(plain.url), /data-watch-control="repl"/, "no REPL page without --repl");
 });
 
 test("restarts reuse remembered addresses and restore previews that were open", { skip, timeout: 60_000 }, async t => {
