@@ -183,7 +183,7 @@ test("--repl: every view links the REPL page, and its links never outlive the pr
 	const [session] = (await (await fetch(new URL(`/api/sessions?token=${token}`, first.url))).json()).sessions;
 	const sessionUrl = await openView(first, session.id);
 	assert.match(await page(sessionUrl), /data-watch-control="repl" href="[^"]*__pi_markdown_preview_repl__/, "a session preview links the REPL page");
-	assert.match(await page(await openView(first, "all")), /data-watch-control="repl"/, "so does the merged preview");
+	assert.match(await page(await openView(first, "all")), /<a data-watch-control="repl"/, "so does the merged preview");
 	await first.close();
 	const second = await startSessionIndex(options);
 	t.after(() => second.close());
@@ -192,7 +192,7 @@ test("--repl: every view links the REPL page, and its links never outlive the pr
 	assert.ok(!existsSync(join(stateDir, "servers.json")) || !/"token"/.test(readFileSync(join(stateDir, "servers.json"), "utf8")), "nothing remembered");
 	const plain = await startResponseWatch({ cwd: f.cwd, roots: f.roots, style: styleForMode("light"), agents: ["claude"], ...fast });
 	t.after(() => plain.close());
-	assert.doesNotMatch(await page(plain.url), /data-watch-control="repl"/, "no REPL page without --repl");
+	assert.doesNotMatch(await page(plain.url), /<a data-watch-control="repl"/, "no REPL page without --repl");
 });
 
 test("restarts reuse remembered addresses and restore previews that were open", { skip, timeout: 60_000 }, async t => {
