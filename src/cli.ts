@@ -14,7 +14,7 @@ Usage:
 
 Options:
   --agent <name|all>              claude, codex, pi, opencode (default: all). Repeatable/comma-separated.
-  -a, --all-projects             Index recent sessions across folders, grouped by project.
+  -a, --all, --all-projects      Index recent sessions across folders, grouped by project.
   --merged                        Open the merged preview directly instead of the session index.
   --session <path|ses_id>         Preview one JSONL log or OpenCode session ID directly.
   --opencode-db <path>            Custom OpenCode SQLite database (default: XDG data/opencode/opencode.db).
@@ -74,7 +74,7 @@ function parseArgs(argv: string[]) {
 		else if (arg === "--working" || arg === "--turn-details") options.turnDetails = true;
 		else if (arg === "--live") { options.live = true; options.turnDetails = true; }
 		else if (arg === "--repl") options.repl = true;
-		else if (arg === "--all-projects" || arg === "-a") options.allProjects = true;
+		else if (arg === "--all-projects" || arg === "--all" || arg === "-a") options.allProjects = true;
 		else if (arg === "--cwd") { options.cwd = value(); options.cwdExplicit = true; }
 		else if (arg === "--theme") {
 			options.theme = value();
