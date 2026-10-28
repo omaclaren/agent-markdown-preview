@@ -46,7 +46,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 |---------|-------------|
 | `agent-markdown-preview --live` | Session index with Working and [Live](#live-and-working) |
 | `agent-markdown-preview --working` | The same without Live |
-| `agent-markdown-preview --repl` | Add the [REPL page](#repl-page): the shared REPL sessions' recent recorded submissions |
+| `agent-markdown-preview --repl` | Add the [REPL page](#shared-repl-sessions-optional): the shared REPL sessions' recent recorded submissions |
 | `agent-markdown-preview` | Session index, responses only |
 | `agent-markdown-preview -a --live` | Sessions from every project folder |
 | `agent-markdown-preview --merged` | One preview of the latest response from any session here |
@@ -76,9 +76,11 @@ With `--live` and **Follow activity** on, the page moves to Working when a turn 
 
 Some content may be shortened or left out; [details](docs/details.md#working) lists what Working reads and its limits.
 
-### REPL page
+### Shared REPL sessions (optional)
 
-`--repl` adds a **REPL** page, beside Preview and Working, for working alongside agents in a shared [pi-repl](https://github.com/omaclaren/pi-repl) or agent-repl session. It lists pi-repl's shared sessions (`pi-repl-python`, `pi-repl-julia`, …). Open one to follow its recent recorded submissions as they arrive: who sent each one (the agent's name, Pi or Pi Studio), its status and time, the code and the output. It updates without waiting for a response. Code typed directly into the terminal isn't in the record, so it doesn't appear here.
+This is optional and off unless you ask for it. It works with [pi-repl](https://github.com/omaclaren/pi-repl), agent-repl and Pi Studio, whose shared REPL sessions run in tmux; without them, leave it off.
+
+`--repl` adds a **REPL** page, beside Preview and Working, for working alongside agents in a shared [pi-repl](https://github.com/omaclaren/pi-repl) or agent-repl session. It lists pi-repl's shared sessions (`pi-repl-python`, `pi-repl-julia`, …). Open one to follow its recent recorded submissions as they arrive: who sent each one (the agent's name, Pi or Pi Studio), its status and time, the code (highlighted) and the output. **Option/Alt+Left** goes back a page. It updates without waiting for a response. Code typed directly into the terminal isn't in the record, so it doesn't appear here.
 
 The page only reads: it never runs or sends code, and inspects tmux without changing anything. It shows one session's lifetime; if the session ends or a new one starts with the same name, it says so and doesn't follow the new one.
 

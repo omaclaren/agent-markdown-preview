@@ -28,8 +28,8 @@ Options:
   --history <n>                   Earlier responses each preview starts with (default 10, max 20; 0 = only the latest).
   --working                       Opt in to Working: recorded prompts, tool output and images (may contain sensitive content).
   --live                          Also follow a session's current turn as it is recorded (OpenCode: v2 sessions; implies --working).
-  --repl                          Add a page of the shared REPL sessions' recent recorded submissions (pi-repl/agent-repl);
-                                  its links never outlive the process.
+  --repl                          Add a page of the shared REPL sessions' recent recorded submissions (optional; for
+                                  pi-repl, agent-repl and Pi Studio sessions in tmux). Its links never outlive the process.
   --open                          Open a browser tab even at a remembered address.
   --no-open                       Never open a browser tab (the URL is still printed).
   -h, --help                      Show this help.
