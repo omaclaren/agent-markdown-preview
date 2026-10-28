@@ -159,9 +159,9 @@ test("grouped index: duplicate folder names, scoped previews/resources/live upda
 	assert.notEqual(local.url, index.url, "local and global indexes have separate slots");
 });
 
-for (const mode of ["--all-projects", "-a"]) test(`all-project empty state and CLI validation/agent filter (${mode})`, { skip: !pandoc, timeout: 30_000 }, async t => {
+for (const mode of ["--all-projects", "-a", "--all"]) test(`all-project empty state and CLI validation/agent filter (${mode})`, { skip: !pandoc, timeout: 30_000 }, async t => {
 	const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
-	assert.equal(help.status, 0); assert.match(help.stdout, /-a, --all-projects/);
+	assert.equal(help.status, 0); assert.match(help.stdout, /-a, --all, --all-projects/);
 	for (const flags of [["--merged"], ["--cwd", "/tmp"], ["--session", "ses_test"], ["notes.md"]]) {
 		const result = spawnSync(process.execPath, [cli, mode, ...flags], { encoding: "utf8" });
 		assert.equal(result.status, 2); assert.match(result.stderr, /--all-projects/);

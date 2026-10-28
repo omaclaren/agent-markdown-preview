@@ -56,7 +56,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 |--------|-------------|
 | `--agent claude,codex,pi,opencode` | Agents to follow (default: all) |
 | `--cwd <dir>` | Project directory whose sessions to follow (default: current directory) |
-| `-a`, `--all-projects` | Follow recent sessions from every folder |
+| `-a`, `--all`, `--all-projects` | Follow recent sessions from every folder |
 | `--opencode-db <path>` | OpenCode database to read instead of the default |
 | `--history <n>` | Earlier responses each preview starts with (default 10, maximum 20; 0 shows only the latest) |
 | `--theme <name\|file>` | `agent` (default), `neutral`, `claude`, `codex`, `opencode`, `pi`, `pi-studio`, `auto`, a `-light`/`-dark` variant, or a Pi theme `.json` file |
@@ -81,7 +81,7 @@ The index lists sessions active in the last three days, up to eight per agent, w
 
 A preview shows the final response of each turn: the text the agent writes after its last tool call. It starts with the session's last 10 responses and keeps up to 20. Step through them with **Previous**, **Next** and **Latest** in the **current/total ▾** counter menu, or with **Option/Alt+Left/Right** (add **Shift** for the oldest or latest). Press **?** for a list of keyboard shortcuts, or choose **Keyboard shortcuts** in the counter menu. On an older response the page stays put and marks **Latest (new)** when something arrives. **All sessions (merged)** shows the latest response from any session in the directory. A file preview adds a version each time the file changes and keeps your reading position.
 
-`--all-projects` (`-a`) groups sessions by folder, each with its own merged preview, and follows up to 64 sessions in total. It cannot be combined with `--cwd`, `--session`, a file argument or `--merged`.
+`--all-projects` (`-a` or `--all`) groups sessions by folder, each with its own merged preview, and follows up to 64 sessions in total. It cannot be combined with `--cwd`, `--session`, a file argument or `--merged`.
 
 ![Cross-project session index](screenshots/all-projects.png)
 
