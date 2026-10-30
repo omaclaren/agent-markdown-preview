@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en" data-product="preview">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>agent-markdown-preview — responses, code and inline figures</title>
+  <meta name="description" content="Read coding-agent responses in your browser, then follow shared REPL code and inline plots. Watch a real Pi and Claude Code workflow.">
+  <link rel="canonical" href="https://omaclaren.github.io/agent-markdown-preview/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="agent-markdown-preview — responses, code and inline figures">
+  <meta property="og:description" content="Read coding-agent responses in your browser, then follow shared REPL code and inline plots. Watch a real Pi and Claude Code workflow.">
+  <meta property="og:url" content="https://omaclaren.github.io/agent-markdown-preview/">
+  <meta property="og:image" content="https://omaclaren.github.io/agent-markdown-preview/assets/demo-poster.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="color-scheme" content="light">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="./">agent-markdown-preview</a>
+      <nav aria-label="Main navigation">
+        <a href="#demo">Demo</a><a href="#setup">Install</a><a href="https://github.com/omaclaren/agent-markdown-preview#readme">Docs &amp; source</a>
+      </nav>
+    </header>
+    <main id="main">
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">A view alongside your terminal</p>
+        <h1 id="title">Read the response. Follow the code.</h1>
+        <p class="lead">Preview Claude Code, Codex, Pi and OpenCode responses in your browser, with math and syntax highlighting. Add the optional REPL page to follow submitted code and plots.</p>
+      </section>
+      <section id="demo" class="demo" aria-label="Recorded shared REPL demo">
+      <figure>
+        <video controls playsinline preload="metadata" width="1600" height="900" poster="assets/demo-poster.png" aria-label="Pi, an operator and Claude Code sharing a Python REPL" aria-describedby="demo-caption">
+          <source src="assets/shared-repl-demo.mp4" type="video/mp4">
+          <p><a href="assets/shared-repl-demo.mp4">Watch or download the demo.</a></p>
+        </video>
+        <figcaption id="demo-caption">
+          <p class="demo-title">Pi, Claude Code and you, in one Python session</p>
+          <p>Switch from the response preview to the shared REPL page. Follow Pi’s attractor plot, the operator’s new trajectory and Claude Code’s comparison, with the code beside each result.</p>
+          <p class="recording-note">Silent, one-minute recording. Real agent runs with automated typing. Playback is real time; internal metadata is redacted for this recording.</p>
+        </figcaption>
+      </figure>
+      <div class="demo-links">
+        <a href="assets/shared-repl-demo.mp4">Open video</a>
+        <a href="https://github.com/omaclaren/agent-markdown-preview/blob/master/docs/assets/science.py">Example Python code</a>
+        <a href="https://omaclaren.github.io/agent-repl/">About the shared REPL</a>
+      </div>
+      <details>
+        <summary>What happens in the demo</summary>
+        <p>The imports and Lorenz function are loaded before filming. The example code includes that setup.</p>
+        <ol>
+          <li>Pi integrates a Lorenz trajectory, stores it as <code>a</code> and plots the attractor.</li>
+          <li>The operator sends <code>b = odeint(lorenz, [1.0001, 1, 1], t)</code> with <code>!agent-repl-py</code>, from Pi’s shell mode.</li>
+          <li>Claude Code reuses <code>a</code> and <code>b</code> to plot how their separation grows. Both plots appear inline on the REPL page.</li>
+        </ol>
+      </details>
+      </section>
+      <section id="setup" class="setup" aria-label="Installation and documentation">
+      <div>
+        <h2>Open a preview</h2>
+        <p>From the project directory where you are working with an agent:</p>
+        <pre><code>npm install -g agent-markdown-preview
+agent-markdown-preview --repl</code></pre>
+        <p>Leave off <code>--repl</code> for responses only. The REPL page is optional and reads existing sessions from <a href="https://omaclaren.github.io/agent-repl/">agent-repl</a>, <a href="https://github.com/omaclaren/pi-repl">pi-repl</a> or Pi Studio; it does not run code.</p>
+        <p class="requirements">Requires Node.js 22+ and <a href="https://pandoc.org/installing.html">Pandoc</a>. Use Node.js 22.13+ for OpenCode sessions. See the <a href="https://github.com/omaclaren/agent-markdown-preview#install">installation notes</a> for platform and rendering dependencies.</p>
+      </div>
+      <aside class="aside">
+        <h2>More than the final answer</h2>
+        <p>Read rendered responses, inspect recorded tool activity, or follow shared REPL submissions. Preview local Markdown, LaTeX, code and diff files too.</p>
+        <p>The preview reads the session histories your agents already write. <a href="https://github.com/omaclaren/agent-markdown-preview#quick-start">Quick start and options.</a></p>
+        <p class="requirements">Keep live preview links private: they can expose recorded code and output. The redactions above apply to this video, not to live previews. <a href="https://github.com/omaclaren/agent-markdown-preview#security">Security notes.</a></p>
+      </aside>
+      </section>
+    </main>
+    <footer>
+      <p>agent-markdown-preview · MIT licence</p>
+      <div><a href="https://github.com/omaclaren/agent-markdown-preview">GitHub</a><a href="https://www.npmjs.com/package/agent-markdown-preview">npm</a><a href="https://github.com/omaclaren/agent-markdown-preview/issues">Issues</a></div>
+    </footer>
+  </div>
+</body>
+</html>

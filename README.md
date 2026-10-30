@@ -2,6 +2,12 @@
 
 Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) or [OpenCode](https://opencode.ai). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
+## Demo
+
+[![Shared REPL code and inline figures in the browser preview](docs/assets/demo-poster.png)](https://omaclaren.github.io/agent-markdown-preview/#demo)
+
+[Watch the one-minute demo](https://omaclaren.github.io/agent-markdown-preview/#demo): follow Pi, a terminal submission and Claude Code from responses to shared REPL code and inline plots. The recording uses automated typing, with internal metadata redacted. [About the shared REPL](https://omaclaren.github.io/agent-repl/).
+
 ## Screenshots
 
 Screenshots use synthetic sessions.
