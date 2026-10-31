@@ -90,7 +90,9 @@ test("the page explains directory and cross-project session overviews before res
 test("live-mode guidance explains both view transitions and links Pi Studio", () => {
 	const liveGuidance = html.match(/<h2>Following a turn<\/h2>\s*<p>([\s\S]*?)<\/p>/)?.[1];
 	assert.ok(liveGuidance);
-	assert.match(liveGuidance, /--live/);
+	assert.match(liveGuidance, /updates automatically[\s\S]*even without <code>--live<\/code>/);
+	assert.match(liveGuidance, /adds in-progress activity in Working/);
+	assert.match(html, /REPL page updates code and results[\s\S]*independently of <code>--live<\/code>/);
 	assert.match(liveGuidance, /Follow activity enabled/);
 	assert.match(liveGuidance, /Preview[\s\S]*Working[\s\S]*Preview/);
 	assert.match(html, /href="https:\/\/github\.com\/omaclaren\/pi-studio">Pi Studio<\/a>/);
