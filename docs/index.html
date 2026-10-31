@@ -43,7 +43,7 @@
           </figcaption>
         </figure>
         <h2>Following a turn</h2>
-        <p>Add <code>--live</code> to follow recorded prompts, tool calls and results in the Working view as a turn runs.</p>
+        <p>With <code>--live</code> and Follow activity enabled in the toolbar, the page switches from Preview to Working when a turn starts, then returns to Preview when it finishes. Working shows the recorded prompts, tool calls and results.</p>
         <figure class="activity-example">
           <a class="illustration" href="assets/live.png">
             <img src="assets/live.png" width="2000" height="2080" loading="lazy" alt="Working view following a prompt to check residuals, with Bash tool calls, recorded output and a call waiting for its result.">
@@ -59,13 +59,13 @@
         <pre><code>npm install -g agent-markdown-preview</code></pre>
         <p>From the project directory where you are working with an agent, run:</p>
         <pre><code>agent-markdown-preview</code></pre>
-        <p>This opens an index of the project’s recent agent sessions. Open a session to read its responses as they are completed. Add <code>--live</code> to follow recorded prompts, tool calls and results during a turn.</p>
+        <p>This opens an index of the project’s recent agent sessions. Open a session to read its responses as they are completed. To switch to Working during each turn and back to Preview afterwards, add <code>--live</code> and turn on Follow activity.</p>
         <p>For a local Markdown, LaTeX, code or diff file, pass its path to the command.</p>
         <p>Anyone with a preview link can read its content and use its file actions, so keep these links private. See the <a href="https://github.com/omaclaren/agent-markdown-preview#security">security notes</a> and <a href="https://github.com/omaclaren/agent-markdown-preview#quick-start">full documentation</a> for details.</p>
       </section>
       <section id="demo" class="repl-demo" aria-labelledby="demo-title">
         <h2 id="demo-title">Optional shared REPL demo</h2>
-        <p>The REPL page is enabled with <code>--repl</code> and reads recorded submissions from <a href="https://omaclaren.github.io/agent-repl/">agent-repl</a>, <a href="https://github.com/omaclaren/pi-repl">pi-repl</a> or Pi Studio sessions. It shows submitted code and saved plots without running code.</p>
+        <p>The REPL page is enabled with <code>--repl</code> and reads recorded submissions from <a href="https://omaclaren.github.io/agent-repl/">agent-repl</a>, <a href="https://github.com/omaclaren/pi-repl">pi-repl</a> or <a href="https://github.com/omaclaren/pi-studio">Pi Studio</a> sessions. It shows submitted code and saved plots without running code.</p>
         <pre><code>agent-markdown-preview --repl</code></pre>
         <p>The video below shows Pi and Claude Code sharing a Python session with an operator.</p>
         <figure>

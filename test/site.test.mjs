@@ -67,3 +67,12 @@ test("the main illustrations and setup precede the optional REPL demo", () => {
 		assert.equal(createHash("sha256").update(readFileSync(new URL("assets/" + name, docs))).digest("hex"), checksum);
 	}
 });
+
+test("live-mode guidance explains both view transitions and links Pi Studio", () => {
+	const liveGuidance = html.match(/<h2>Following a turn<\/h2>\s*<p>([\s\S]*?)<\/p>/)?.[1];
+	assert.ok(liveGuidance);
+	assert.match(liveGuidance, /--live/);
+	assert.match(liveGuidance, /Follow activity enabled/);
+	assert.match(liveGuidance, /Preview[\s\S]*Working[\s\S]*Preview/);
+	assert.match(html, /href="https:\/\/github\.com\/omaclaren\/pi-studio">Pi Studio<\/a>/);
+});
