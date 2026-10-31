@@ -14,7 +14,7 @@ test("the landing page uses an opt-in native video player and a text alternative
 	assert.match(player, /\bplaysinline\b/);
 	assert.match(player, /preload="metadata"/);
 	assert.doesNotMatch(player, /\b(?:autoplay|loop)\b/);
-	assert.match(html, /<details>[\s\S]*What happens in the demo/);
+	assert.match(html, /<details>[\s\S]*Details of the demo/);
 	assert.match(html, /automated typing/);
 	assert.match(html, /redacted for this recording/);
 	assert.match(html, /name="viewport"/);
