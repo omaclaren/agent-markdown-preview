@@ -35,7 +35,7 @@ test("local assets and section links exist; canonical and documentation links ar
 });
 
 test("the public asset list is limited to reviewed screenshots, recording, poster and example code", () => {
-	assert.deepEqual(readdirSync(new URL("assets/", docs)).sort(), ["demo-poster.png", "live.png", "preview-light.png", "science.py", "shared-repl-demo.mp4"]);
+	assert.deepEqual(readdirSync(new URL("assets/", docs)).sort(), ["all-projects.png", "demo-poster.png", "index.png", "live.png", "preview-light.png", "science.py", "shared-repl-demo.mp4"]);
 	const video = readFileSync(new URL("assets/shared-repl-demo.mp4", docs));
 	// Updating the recording requires deliberately reviewing and updating this checksum.
 	assert.equal(createHash("sha256").update(video).digest("hex"), "fcc85b1fd1ade143dffe5cf7438725997b9c6282b27ffd3442e0ea468a6e1d31");
@@ -61,11 +61,30 @@ test("the main illustrations and setup precede the optional REPL demo", () => {
 	assert.match(demoIntroduction, /agent-markdown-preview --repl/);
 	assert.match(html, /property="og:image" content="https:\/\/omaclaren\.github\.io\/agent-markdown-preview\/assets\/preview-light\.png"/);
 	for (const [name, checksum] of Object.entries({
+		"index.png": "8f8b8dc8292994ec913fe62fa1ca75826b00adc2d2fa8ed292d1ca858f4a09fe",
+		"all-projects.png": "58c1f1f20c40c2b2549fc4c4affa860b7e54be965caec639d8fb7b06266822a2",
 		"preview-light.png": "733df8c2cf1bb465b79d72674e3d94567a463a7cd695972a22e9d19d316ea90b",
 		"live.png": "bb66c72453394cdf634bdbf9a5e2776ca225a3894c7f371d1fdfe74519eb14cb",
 	})) {
 		assert.equal(createHash("sha256").update(readFileSync(new URL("assets/" + name, docs))).digest("hex"), checksum);
 	}
+});
+
+test("the page explains directory and cross-project session overviews before response previews", () => {
+	const examples = html.slice(html.indexOf('<section id="examples"'), html.indexOf('<section id="setup"'));
+	const directory = examples.indexOf("Sessions in the current directory");
+	const across = examples.indexOf("Sessions across directories");
+	const responses = examples.indexOf("Rendered responses");
+	assert.ok(directory >= 0 && directory < across && across < responses);
+	assert.match(examples.slice(directory, across), /<code>agent-markdown-preview<\/code>/);
+	assert.match(examples.slice(directory, across), /All sessions \(merged\)/);
+	assert.match(examples.slice(directory, across), /last three days, up to eight per agent/);
+	assert.match(examples.slice(across, responses), /<code>agent-markdown-preview --all<\/code>/);
+	assert.match(examples.slice(across, responses), /grouped by directory/);
+	assert.match(examples.slice(across, responses), /Each directory has its own merged preview/);
+	assert.match(examples.slice(across, responses), /up to 64 sessions in total/);
+	assert.match(examples.slice(directory, across), /src="assets\/index\.png"/);
+	assert.match(examples.slice(across, responses), /src="assets\/all-projects\.png"/);
 });
 
 test("live-mode guidance explains both view transitions and links Pi Studio", () => {

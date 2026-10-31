@@ -59,6 +59,8 @@ h1 {
 figure { margin: 0; }
 .examples figure { margin-bottom: 28px; }
 .examples > p { max-width: 760px; margin: 0 0 18px; }
+.examples > pre { max-width: 760px; }
+.examples > h2:first-child { margin-top: 0; }
 .illustration { display: block; }
 .illustration img { display: block; width: 100%; height: auto; border: 1px solid var(--line); }
 .activity-example { max-width: 760px; }

@@ -14,7 +14,7 @@
   <meta property="og:image:alt" content="A rendered response with an equation, Python code and a diagram">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="color-scheme" content="light">
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -31,15 +31,38 @@
     <main id="main">
       <section class="intro" aria-labelledby="title">
         <h1 id="title">Browser previews for coding agents</h1>
-        <p>agent-markdown-preview renders responses from Claude Code, Codex, Pi and OpenCode in a browser, with equations, syntax highlighting and diagrams. It reads the agents’ existing session histories, so no agent configuration is needed.</p>
+        <p>agent-markdown-preview lists recent sessions from Claude Code, Codex, Pi and OpenCode and renders their responses in a browser, with equations, syntax highlighting and diagrams. It reads the agents’ existing session histories, so no agent configuration is needed.</p>
       </section>
-      <section id="examples" class="examples" aria-label="Response previews and recorded activity">
+      <section id="examples" class="examples" aria-label="Session overviews, response previews and recorded activity">
+        <h2>Sessions in the current directory</h2>
+        <p>Run the command in a project directory to open an index of its recent agent sessions. Open a session to read its responses, or choose All sessions (merged) to follow the latest completed response from any session in that directory.</p>
+        <pre><code>agent-markdown-preview</code></pre>
         <figure>
-          <a class="illustration" href="assets/preview-light.png">
-            <img src="assets/preview-light.png" width="2000" height="1520" alt="Response preview showing an exponential decay model, a rendered equation, highlighted Python code, an estimates table and a diagram.">
+          <a class="illustration" href="assets/index.png">
+            <img src="assets/index.png" width="1500" height="782" alt="Session index for one project, with a merged preview and individual Claude Code, Pi, Codex and OpenCode sessions. The Codex session is marked as working.">
           </a>
           <figcaption>
-            <p>The response view renders equations, code and diagrams in the agent’s answer. These screenshots use synthetic sessions and can be opened at full size.</p>
+            <p>The index covers sessions active in the last three days, up to eight per agent. All screenshots on this page use synthetic sessions and can be opened at full size.</p>
+          </figcaption>
+        </figure>
+        <h2>Sessions across directories</h2>
+        <p>Add <code>--all</code> to browse recent sessions across project directories, grouped by directory.</p>
+        <pre><code>agent-markdown-preview --all</code></pre>
+        <figure>
+          <a class="illustration" href="assets/all-projects.png">
+            <img src="assets/all-projects.png" width="1500" height="1266" loading="lazy" alt="Cross-project index showing sessions grouped under decay-model and field-notes, each with a separate merged preview.">
+          </a>
+          <figcaption>
+            <p>Each directory has its own merged preview. Across directories, the index follows up to 64 sessions in total.</p>
+          </figcaption>
+        </figure>
+        <h2>Rendered responses</h2>
+        <figure>
+          <a class="illustration" href="assets/preview-light.png">
+            <img src="assets/preview-light.png" width="2000" height="1520" loading="lazy" alt="Response preview showing an exponential decay model, a rendered equation, highlighted Python code, an estimates table and a diagram.">
+          </a>
+          <figcaption>
+            <p>The response view renders equations, code and diagrams in the agent’s answer.</p>
           </figcaption>
         </figure>
         <h2>Following a turn</h2>

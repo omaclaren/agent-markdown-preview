@@ -2,6 +2,8 @@
 
 Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) or [OpenCode](https://opencode.ai). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
+Run it in a project directory for an index of that project’s recent sessions, or use `agent-markdown-preview --all` to browse across directories, grouped by project. Each project also has a merged preview of the latest completed response from any of its sessions.
+
 ## Screenshots
 
 Screenshots use synthetic sessions.
@@ -48,7 +50,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 | `agent-markdown-preview --working` | The same without Live |
 | `agent-markdown-preview --repl` | Add the [REPL page](#shared-repl-sessions-optional): the shared REPL sessions' recent recorded submissions |
 | `agent-markdown-preview` | Session index, responses only |
-| `agent-markdown-preview -a --live` | Sessions from every project folder |
+| `agent-markdown-preview --all` | Recent sessions across directories, grouped by project |
 | `agent-markdown-preview --merged` | One preview of the latest response from any session here |
 | `agent-markdown-preview --session <path\|ses_id>` | Preview a single session log or OpenCode session |
 | `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
