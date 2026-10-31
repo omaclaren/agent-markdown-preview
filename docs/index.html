@@ -14,7 +14,7 @@
   <meta property="og:image:alt" content="A rendered response with an equation, Python code and a diagram">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="color-scheme" content="light">
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -65,6 +65,26 @@
             <p>The response view renders equations, code and diagrams in the agent’s answer.</p>
           </figcaption>
         </figure>
+        <h2 id="themes">Themes</h2>
+        <p>Responses use each agent’s colour palette and follow your system’s light or dark setting by default. The session index and file previews use a neutral palette. Choose a shared theme with <code>--theme</code>, or fix the appearance with <code>--appearance</code>.</p>
+        <pre><code>agent-markdown-preview --theme neutral --appearance dark</code></pre>
+        <div class="theme-examples">
+          <figure>
+            <a class="illustration" href="assets/preview-light.png">
+              <img src="assets/preview-light.png" width="2000" height="1520" loading="lazy" alt="Claude Code response preview in its light palette.">
+            </a>
+            <figcaption><p>Light</p></figcaption>
+          </figure>
+          <figure>
+            <a class="illustration" href="assets/preview-dark.png">
+              <img src="assets/preview-dark.png" width="2000" height="1520" loading="lazy" alt="The same Claude Code response in its dark palette.">
+            </a>
+            <figcaption><p>Dark</p></figcaption>
+          </figure>
+        </div>
+        <p>To change the palette for one agent, use a per-agent override:</p>
+        <pre><code>agent-markdown-preview --agent-theme pi=pi-studio</code></pre>
+        <p>See the <a href="https://github.com/omaclaren/agent-markdown-preview#themes">theme documentation</a> for more options, including custom Pi theme files.</p>
         <h2>Following a turn</h2>
         <p>Preview updates automatically as the agent finishes each turn, even without <code>--live</code>. The <code>--live</code> option adds in-progress activity in Working. With Follow activity enabled in the toolbar, the page switches from Preview to Working when a turn starts, then returns to Preview when it finishes. Working shows the recorded prompts, tool calls and results.</p>
         <figure class="activity-example">

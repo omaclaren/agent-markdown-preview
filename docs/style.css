@@ -64,6 +64,8 @@ figure { margin: 0; }
 .illustration { display: block; }
 .illustration img { display: block; width: 100%; height: auto; border: 1px solid var(--line); }
 .activity-example { max-width: 760px; }
+.theme-examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.theme-examples figure { margin-bottom: 12px; }
 .repl-demo { padding-bottom: 36px; }
 .repl-demo > h2 { margin-top: 0; }
 .repl-demo > p, .repl-demo > pre { max-width: 760px; }
@@ -129,4 +131,5 @@ footer p { margin: 0; }
   .intro { padding: 28px 0 22px; }
   .intro p { font-size: 17px; }
   .guide { padding-top: 28px; }
+  .theme-examples { grid-template-columns: 1fr; gap: 8px; }
 }

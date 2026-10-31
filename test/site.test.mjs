@@ -35,7 +35,7 @@ test("local assets and section links exist; canonical and documentation links ar
 });
 
 test("the public asset list is limited to reviewed screenshots, recording, poster and example code", () => {
-	assert.deepEqual(readdirSync(new URL("assets/", docs)).sort(), ["all-projects.png", "demo-poster.png", "index.png", "live.png", "preview-light.png", "science.py", "shared-repl-demo.mp4"]);
+	assert.deepEqual(readdirSync(new URL("assets/", docs)).sort(), ["all-projects.png", "demo-poster.png", "index.png", "live.png", "preview-dark.png", "preview-light.png", "science.py", "shared-repl-demo.mp4"]);
 	const video = readFileSync(new URL("assets/shared-repl-demo.mp4", docs));
 	// Updating the recording requires deliberately reviewing and updating this checksum.
 	assert.equal(createHash("sha256").update(video).digest("hex"), "fcc85b1fd1ade143dffe5cf7438725997b9c6282b27ffd3442e0ea468a6e1d31");
@@ -63,6 +63,7 @@ test("the main illustrations and setup precede the optional REPL demo", () => {
 	for (const [name, checksum] of Object.entries({
 		"index.png": "8f8b8dc8292994ec913fe62fa1ca75826b00adc2d2fa8ed292d1ca858f4a09fe",
 		"all-projects.png": "58c1f1f20c40c2b2549fc4c4affa860b7e54be965caec639d8fb7b06266822a2",
+		"preview-dark.png": "94b606af8e6bbb83037ddc3155743fb7559c0ed54b19ba53d8b93f08a82228e1",
 		"preview-light.png": "733df8c2cf1bb465b79d72674e3d94567a463a7cd695972a22e9d19d316ea90b",
 		"live.png": "bb66c72453394cdf634bdbf9a5e2776ca225a3894c7f371d1fdfe74519eb14cb",
 	})) {
@@ -85,6 +86,20 @@ test("the page explains directory and cross-project session overviews before res
 	assert.match(examples.slice(across, responses), /up to 64 sessions in total/);
 	assert.match(examples.slice(directory, across), /src="assets\/index\.png"/);
 	assert.match(examples.slice(across, responses), /src="assets\/all-projects\.png"/);
+});
+
+test("themes follow the response example with light/dark images and configuration guidance", () => {
+	const start = html.indexOf('<h2 id="themes">Themes</h2>');
+	const end = html.indexOf('<h2>Following a turn</h2>');
+	assert.ok(start > html.indexOf('<h2>Rendered responses</h2>') && end > start);
+	const section = html.slice(start, end);
+	assert.match(section, /system’s light or dark setting by default/);
+	assert.match(section, /session index and file previews use a neutral palette/);
+	assert.match(section, /agent-markdown-preview --theme neutral --appearance dark/);
+	assert.match(section, /agent-markdown-preview --agent-theme pi=pi-studio/);
+	assert.match(section, /src="assets\/preview-light\.png"/);
+	assert.match(section, /src="assets\/preview-dark\.png"/);
+	assert.match(section, /href="https:\/\/github\.com\/omaclaren\/agent-markdown-preview#themes"/);
 });
 
 test("live-mode guidance explains both view transitions and links Pi Studio", () => {
