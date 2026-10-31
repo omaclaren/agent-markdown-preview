@@ -57,6 +57,14 @@ h1 {
 .intro p { margin: 0; font-size: 18px; }
 
 figure { margin: 0; }
+.examples figure { margin-bottom: 28px; }
+.examples > p { max-width: 760px; margin: 0 0 18px; }
+.illustration { display: block; }
+.illustration img { display: block; width: 100%; height: auto; border: 1px solid var(--line); }
+.activity-example { max-width: 760px; }
+.repl-demo { padding-bottom: 36px; }
+.repl-demo > h2 { margin-top: 0; }
+.repl-demo > p, .repl-demo > pre { max-width: 760px; }
 video {
   display: block;
   width: 100%;

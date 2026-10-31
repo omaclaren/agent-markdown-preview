@@ -2,12 +2,6 @@
 
 Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) or [OpenCode](https://opencode.ai). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
-## Demo
-
-[![Shared REPL code and inline figures in the browser preview](docs/assets/demo-poster.png)](https://omaclaren.github.io/agent-markdown-preview/#demo)
-
-[Watch the one-minute demo](https://omaclaren.github.io/agent-markdown-preview/#demo): follow Pi, a terminal submission and Claude Code from responses to shared REPL code and inline plots. The recording uses automated typing, with internal metadata redacted. [About the shared REPL](https://omaclaren.github.io/agent-repl/).
-
 ## Screenshots
 
 Screenshots use synthetic sessions.
@@ -89,6 +83,12 @@ This is optional and off unless you ask for it. It works with [pi-repl](https://
 `--repl` adds a **REPL** page, beside Preview and Working, for working alongside agents in a shared [pi-repl](https://github.com/omaclaren/pi-repl) or agent-repl session. It lists pi-repl's shared sessions (`pi-repl-python`, `pi-repl-julia`, …). Open one to follow its recent recorded submissions as they arrive: who sent each one (an agent by its name; a person as **User**, or by the name the sending tool records with how it was sent, such as **Sam · via terminal**; Pi Studio's sends say **via Pi Studio**), its status and time, the code (highlighted) and the output. Image and PDF files a submission's code or output names, such as a plot it saved (`plt.savefig("attachments/fit.png")`), show under it: images as thumbnails, PDFs as links, each opening in a new tab. Relative paths resolve against the session's working directory; a plot shown only in a window isn't caught. If pi-repl marks a session's record as kept in a different record directory from the preview's (a different `TMPDIR`, say), the page says so instead of showing it. **Option/Alt+Left** goes up, from a session to the list and from there to Preview, and **Copy link** copies a link to the session for another browser. The **REPL** link and **Ctrl+Alt+R** (Control+Option on macOS) return to the REPL page you were last on in that tab, so you can switch quickly between it, Preview and Working. It updates without waiting for a response. Code typed directly into the terminal isn't in the record, so it doesn't appear here.
 
 The page only reads: it never runs or sends code, and inspects tmux without changing anything. It shows one session's lifetime; if the session ends or a new one starts with the same name, it says so and doesn't follow the new one.
+
+#### Demo
+
+[![Shared REPL code and inline figures in the browser preview](docs/assets/demo-poster.png)](https://omaclaren.github.io/agent-markdown-preview/#demo)
+
+[Watch the one-minute demo](https://omaclaren.github.io/agent-markdown-preview/#demo): the optional `--repl` page shows code and plots from a Python session shared by Pi, an operator and Claude Code. The recording uses automated typing, with internal metadata redacted. [About the shared REPL](https://omaclaren.github.io/agent-repl/).
 
 **Privacy:** the REPL page shows code and output from any agent or project that uses these sessions, including future submissions, to anyone with the link. It's a separate opt-in from Working, and Working links never gain it. With `--repl`, links and addresses are never remembered, so they stop working when the process stops, and a restart prints new ones.
 
