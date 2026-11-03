@@ -2,6 +2,8 @@
 
 Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) or [OpenCode](https://opencode.ai). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
+Run it in a project directory for an index of that project’s recent sessions, or use `agent-markdown-preview --all` to browse across directories, grouped by project. Each project also has a merged preview of the latest completed response from any of its sessions.
+
 ## Screenshots
 
 Screenshots use synthetic sessions.
@@ -38,7 +40,7 @@ This opens an index of the project's recent agent sessions. Open a session to ge
 
 ![Live: a turn in progress, with a tool call still waiting for its result (synthetic session)](screenshots/live.png)
 
-Working shows recorded prompts and tool output to anyone with the tab's link. For responses only, run `agent-markdown-preview` without `--live`.
+Working shows recorded prompts and tool output to anyone with the tab's link. For responses only, run `agent-markdown-preview` without `--live`. Previews still update automatically as each turn finishes; `--live` adds in-progress activity in Working.
 
 ## Usage
 
@@ -48,7 +50,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 | `agent-markdown-preview --working` | The same without Live |
 | `agent-markdown-preview --repl` | Add the [REPL page](#shared-repl-sessions-optional): the shared REPL sessions' recent recorded submissions |
 | `agent-markdown-preview` | Session index, responses only |
-| `agent-markdown-preview -a --live` | Sessions from every project folder |
+| `agent-markdown-preview --all` | Recent sessions across directories, grouped by project |
 | `agent-markdown-preview --merged` | One preview of the latest response from any session here |
 | `agent-markdown-preview --session <path\|ses_id>` | Preview a single session log or OpenCode session |
 | `agent-markdown-preview <file>` | Preview a Markdown, LaTeX, code or diff file and follow its changes |
@@ -68,7 +70,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 
 ### Live and Working
 
-Working shows a response's recorded prompts, progress, any exposed reasoning, and its tool calls and results. Prompts start expanded and activity starts folded. Commands, file reads and edits have readable views, with the recorded JSON available, and recorded images can be enlarged. Code sent to a shared REPL (pi-repl, agent-repl or Pi Studio) shows its runtime and code, and its result shows just the output, headed with the call it belongs to. Claude's questions show their options and the answers given. **Ctrl+Alt+P** and **Ctrl+Alt+W** (Control+Option on macOS) switch between Preview and Working. **Ctrl+Alt+L** goes to the latest response in Preview from any view, including an earlier Working page. Working is available in session previews, not file previews.
+Working shows a response's recorded prompts, progress, any exposed reasoning, and its tool calls and results. Prompts start expanded and activity starts folded. Commands, file reads and edits have readable views, with the recorded JSON available, and recorded images can be enlarged. Code sent to a shared REPL (pi-repl, agent-repl or [Pi Studio](https://github.com/omaclaren/pi-studio)) shows its runtime and code, and its result shows just the output, headed with the call it belongs to. Claude's questions show their options and the answers given. **Ctrl+Alt+P** and **Ctrl+Alt+W** (Control+Option on macOS) switch between Preview and Working. **Ctrl+Alt+L** goes to the latest response in Preview from any view, including an earlier Working page. Working is available in session previews, not file previews.
 
 With `--live` and **Follow activity** on, the page moves to Working when a turn starts and back to Preview when it ends. If you have scrolled up or moved to another page, it leaves you there. Updates arrive as the agent records them, not token by token, so a tool call shows "No result recorded yet" until its result is recorded. For OpenCode (v2 sessions), a text block appears once OpenCode has recorded it whole, and a tool's output when the tool finishes. A Codex task that ends without a final answer, such as a compaction, returns to the latest Preview. A reverted Codex thread continues in a new session log, which the index lists separately. Anything Live leaves out, such as cards beyond its display limits, is listed in its status line.
 
@@ -78,11 +80,17 @@ Some content may be shortened or left out; [details](docs/details.md#working) li
 
 ### Shared REPL sessions (optional)
 
-This is optional and off unless you ask for it. It works with [pi-repl](https://github.com/omaclaren/pi-repl), agent-repl and Pi Studio, whose shared REPL sessions run in tmux; without them, leave it off.
+This is optional and off unless you ask for it. It works with [pi-repl](https://github.com/omaclaren/pi-repl), agent-repl and [Pi Studio](https://github.com/omaclaren/pi-studio), whose shared REPL sessions run in tmux; without them, leave it off.
 
-`--repl` adds a **REPL** page, beside Preview and Working, for working alongside agents in a shared [pi-repl](https://github.com/omaclaren/pi-repl) or agent-repl session. It lists pi-repl's shared sessions (`pi-repl-python`, `pi-repl-julia`, …). Open one to follow its recent recorded submissions as they arrive: who sent each one (an agent by its name; a person as **User**, or by the name the sending tool records with how it was sent, such as **Sam · via terminal**; Pi Studio's sends say **via Pi Studio**), its status and time, the code (highlighted) and the output. Image and PDF files a submission's code or output names and that it writes while it runs, such as a plot it saved (`plt.savefig("attachments/fit.png")`), show under it: images as thumbnails, PDFs as links, each opening in a new tab. Relative paths resolve against the session's working directory. A plot shown only in a window isn't caught, nor is a file the submission only reads or one written before it ran; a file a later submission rewrites shows under that one instead. If pi-repl marks a session's record as kept in a different record directory from the preview's (a different `TMPDIR`, say), the page says so instead of showing it; a record written only by older versions of these tools, which don't mark it, is shown but said to be unverified. **Option/Alt+Left** goes up, from a session to the list and from there to Preview, and **Copy link** copies a link to the session for another browser. The **REPL** link and **Ctrl+Alt+R** (Control+Option on macOS) return to the REPL page you were last on in that tab, so you can switch quickly between it, Preview and Working. It updates without waiting for a response. Code typed directly into the terminal isn't in the record, so it doesn't appear here.
+`--repl` adds a **REPL** page, beside Preview and Working, for working alongside agents in a shared [pi-repl](https://github.com/omaclaren/pi-repl) or agent-repl session. It lists pi-repl's shared sessions (`pi-repl-python`, `pi-repl-julia`, …). Open one to follow its recent recorded submissions as they arrive: who sent each one (an agent by its name; a person as **User**, or by the name the sending tool records with how it was sent, such as **Sam · via terminal**; Pi Studio's sends say **via Pi Studio**), its status and time, the code (highlighted) and the output. Image and PDF files a submission's code or output names and that it writes while it runs, such as a plot it saved (`plt.savefig("attachments/fit.png")`), show under it: images as thumbnails, PDFs as links, each opening in a new tab. Relative paths resolve against the session's working directory. A plot shown only in a window isn't caught, nor is a file the submission only reads or one written before it ran; a file a later submission rewrites shows under that one instead. If pi-repl marks a session's record as kept in a different record directory from the preview's (a different `TMPDIR`, say), the page says so instead of showing it; a record written only by older versions of these tools, which don't mark it, is shown but said to be unverified. **Option/Alt+Left** goes up, from a session to the list and from there to Preview, and **Copy link** copies a link to the session for another browser. The **REPL** link and **Ctrl+Alt+R** (Control+Option on macOS) return to the REPL page you were last on in that tab, so you can switch quickly between it, Preview and Working. It updates without waiting for a response and works independently of `--live`. Add `--live` as well to follow the agent's in-progress activity in Working. Code typed directly into the terminal isn't in the record, so it doesn't appear here.
 
 The page only reads: it never runs or sends code, and inspects tmux without changing anything. It shows one session's lifetime; if the session ends or a new one starts with the same name, it says so and doesn't follow the new one.
+
+#### Demo
+
+[![Shared REPL code and inline figures in the browser preview](docs/assets/demo-poster.png)](https://omaclaren.github.io/agent-markdown-preview/#demo)
+
+[Watch the one-minute demo](https://omaclaren.github.io/agent-markdown-preview/#demo): the optional `--repl` page shows code and plots from a Python session shared by Pi, an operator and Claude Code. The recording uses automated typing, with internal metadata redacted. [About the shared REPL](https://omaclaren.github.io/agent-repl/).
 
 **Privacy:** the REPL page shows code and output from any agent or project that uses these sessions, including future submissions, to anyone with the link. It's a separate opt-in from Working, and Working links never gain it. With `--repl`, links and addresses are never remembered, so they stop working when the process stops, and a restart prints new ones.
 
