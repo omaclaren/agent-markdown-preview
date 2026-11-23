@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -81,6 +81,11 @@ test("agy: an answer is a finished model step with text and no tool calls; its k
 	assert.deepEqual(steps.flatMap(s => events(s)).map(e => e.kind === "title" ? `title:${e.title}` : e.kind === "working" ? `working:${e.working}` : `response:${e.response.key.split(":").at(-1)}`),
 		["working:true", "title:Read the notes", "response:8", "working:false"]);
 	assert.equal(sessionShortId(path), "22f0", "the conversation, not the file name");
+	const resumed = createSessionReader("agy", path);
+	const working = [prompt("Ask the helper"), model({ content: "Waiting for the helper." }), notice("[Message] sender=helper"), model({ tool_calls: [runCommand("ls")] }), output("a.md"), model({ content: "Done." })]
+		.flatMap(s => resumed(s)).filter(e => e.kind === "working").map(e => e.working);
+	assert.deepEqual(working, [true, false, true, false], "working again when agy wakes the model after an answer");
+	assert.equal(createResponseReader("agy", "/p/transcript.jsonl")(model({ content: "Hi" })).key, `agy:/p/transcript.jsonl:${step - 1}`, "a path without a conversation names it");
 });
 
 test("agy discovery: conversations by the folder their metadata records; subagents and unreadable metadata are left out", async t => {
@@ -89,21 +94,40 @@ test("agy discovery: conversations by the folder their metadata records; subagen
 	const main = f.conversation(ID, { steps: [prompt("Hello"), model({ content: "Hi" })] });
 	f.conversation(SUB, { parent: ID, steps: [prompt("Sub task"), model({ content: "sub ok" })] });
 	f.conversation("11111111-2222-4333-8444-555555555555", { cwd: join(f.base, "elsewhere"), steps: [prompt("Elsewhere")] });
-	f.conversation("22222222-2222-4333-8444-555555555555", { blob: Buffer.from([0xff, 0xff, 0xff]), steps: [prompt("Damaged")] });
+	const damaged = "22222222-2222-4333-8444-555555555555", empty = "44444444-2222-4333-8444-555555555555";
+	f.conversation(damaged, { blob: Buffer.from([0xff, 0xff, 0xff]), steps: [prompt("Damaged")] });
+	const pending = f.conversation(empty, { blob: Buffer.alloc(0), steps: [prompt("Metadata to come")] });
+	const old = f.conversation("55555555-2222-4333-8444-555555555555", { steps: [prompt("Long ago")] });
+	const longAgo = new Date(Date.now() - 46 * 24 * 60 * 60 * 1000);
+	utimesSync(old, longAgo, longAgo);
 	const orphan = agyTranscriptPath(f.root, "33333333-2222-4333-8444-555555555555");
 	mkdirSync(join(orphan, ".."), { recursive: true }); writeFileSync(orphan, JSON.stringify(prompt("No database")) + "\n");
 	mkdirSync(join(f.root, "brain", "not-a-conversation"), { recursive: true });
 	const find = createSessionFinder({ agy: f.root });
 	assert.deepEqual((await find("agy", f.cwd)).map(file => file.path), [main]);
-	assert.deepEqual((await find.all("agy")).map(file => [file.path.split("/").at(-4).slice(0, 8), file.cwd]).sort(), [["03201f23", f.cwd], ["11111111", join(f.base, "elsewhere")]]);
+	assert.deepEqual((await find.all("agy")).map(file => [file.path.split("/").at(-4).slice(0, 8), file.cwd]).sort(), [["03201f23", f.cwd], ["11111111", join(f.base, "elsewhere")]], "not one older than 45 days");
+	// Metadata that couldn't be read is read again: it may be written later.
+	for (const id of [damaged, empty]) {
+		const db = new Database(join(f.root, "conversations", `${id}.db`));
+		db.prepare("UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'").run(metadata({ cwd: f.cwd, id }));
+		db.close();
+	}
+	assert.deepEqual((await find("agy", f.cwd)).map(file => file.path).sort(), [main, agyTranscriptPath(f.root, damaged), pending].sort());
 	assert.equal(await detectAgent(main), "agy", "by its first line");
 	assert.equal(await detectAgent("/home/me/.gemini/antigravity-cli/brain/x/transcript_full.jsonl"), "agy", "by its path");
 	// The metadata reader: a root conversation other than itself is a subagent too; a blob that isn't protobuf, nothing.
 	assert.equal(agyMetadataCwd(metadata({ cwd: "/p", id: ID }), ID), "/p");
 	assert.equal(agyMetadataCwd(metadata({ cwd: "/p", id: ID }), SUB), null);
 	assert.equal(agyMetadataCwd(Buffer.concat([text(1, "not a message"), text(7, "https://example.com/p")]), ID), null);
-	assert.equal(protobufStrings(Buffer.from([0x0a, 0x05, 0x61])), null, "a length past the end");
-	assert.equal(protobufStrings(Buffer.from([0x0b])), null, "an unknown wire type");
+	assert.equal(agyMetadataCwd(Buffer.from([0xff]), ID), undefined, "unreadable: not known yet");
+	assert.equal(agyMetadataCwd(Buffer.concat([text(6, ID), text(7, "file:///p/q/")]), ID), "/p/q", "without a trailing slash");
+	assert.equal(agyMetadataCwd(Buffer.concat([text(6, ID), text(7, "file:///")]), ID), "/");
+	const nanoseconds = Buffer.from([0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
+	assert.equal(agyMetadataCwd(Buffer.concat([nanoseconds, text(6, ID), text(7, "file:///p")]), ID), "/p", "a 64-bit number is skipped");
+	assert.equal(protobufStrings(Buffer.from([0x0a, 0x05, 0x61]), new Set([1])), null, "a length past the end");
+	assert.equal(protobufStrings(Buffer.from([0x0b]), new Set([1])), null, "an unknown wire type");
+	const many = Buffer.concat([Buffer.from(Array.from({ length: 100_000 }, () => [0x12, 0x00]).flat()), text(7, "a"), text(7, "b")]);
+	assert.deepEqual([...protobufStrings(many, new Set([7]))].map(([n, v]) => [n, String(Buffer.from(v))]), [[7, "a"]], "only the first of each field it reads");
 });
 
 test("agy monitor: a conversation's answers arrive as it records them", async t => {
@@ -161,12 +185,36 @@ test("agy Working: a turn from its typed prompt to the answer, with tools, resul
 	assert.match(turnDetailsFromRecords("agy", records.slice(4), final).notices.join(" "), /input prompt is not available/);
 });
 
+test("agy Working: a step recorded again belongs to its first turn; a step that could not be read after an answer starts the next turn", () => {
+	step = 0;
+	const path = `/x/brain/${ID}/.system_generated/logs/transcript_full.jsonl`;
+	const records = [prompt("Start the server"), model({ tool_calls: [runCommand("serve")] })];
+	const server = output("Tool is running as a background task", "RUNNING");
+	records.push(server, model({ content: "Started." }), prompt("Check the logs"), model({ tool_calls: [runCommand("cat log")] }));
+	records.push({ ...server, status: "DONE", content: "server stopped" }, output("Created At: yesterday"), model({ content: "Logs are clean." }));
+	step++; // The next prompt was too large to read.
+	records.push(model({ content: "Summarised the paste." }));
+	const read = createResponseReader("agy", path);
+	const [started, clean, pasted] = records.map(r => read(r)).filter(Boolean);
+	assert.deepEqual(turnDetailsFromRecords("agy", records, clean).events.map(e => [e.kind, e.text]), [
+		["prompt", "Check the logs"], ["tool", JSON.stringify(runCommand("cat log").args, null, 2)], ["result", "Created At: yesterday"],
+	], "not the earlier turn's server; only agy's own timing lines are removed");
+	assert.deepEqual(turnDetailsFromRecords("agy", records, started).events.map(e => e.text).at(-1), "Tool is running as a background task", "as recorded by its answer");
+	const details = turnDetailsFromRecords("agy", records, pasted);
+	assert.deepEqual(details.events, []);
+	assert.match(details.notices.join(" "), /input prompt is not available/);
+});
+
 test("agy on the command line: --agent agy, and the neutral palette under the agent theme", () => {
 	const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 	const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
 	assert.match(help.stdout, /claude, codex, pi, opencode, agy \(default: all\)/);
 	const unknown = spawnSync(process.execPath, [cli, "--agent", "gemini", "--no-open"], { encoding: "utf8" });
 	assert.equal(unknown.status, 2); assert.match(unknown.stderr, /claude, codex, pi, opencode, agy or all/);
+	// Accepted: parsing goes on to reject a file to watch alongside agent options.
+	const accepted = spawnSync(process.execPath, [cli, "--agent", "claude,agy", "--agent-theme", "agy=codex", "README.md", "--no-open"], { encoding: "utf8" });
+	assert.equal(accepted.status, 2); assert.match(accepted.stderr, /--agent-theme applies to agent sessions, not file watching/);
+	assert.doesNotMatch(accepted.stderr, /Unknown agent|agy=codex/);
 	assert.deepEqual(resolveTheme("agent", "light").agentThemes.agy.style, resolveTheme("neutral", "light").style);
 	assert.deepEqual(resolveTheme("agent", "light", { agy: "codex" }).agentThemes.agy.style, resolveTheme("codex", "light").style);
 });

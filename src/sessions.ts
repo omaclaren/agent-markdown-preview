@@ -7,7 +7,7 @@ import { isAbsolute, join, normalize } from "node:path";
 import { extractAssistantMarkdownContent } from "./render.js";
 import { createOpenCodeStore, openCodeSessionId, readOpenCodeResponse } from "./opencode.js";
 import { createClaudeResponseAssembler, isClaudeFinal } from "./shared/claude-response.js";
-import { agyConversation, agyPrompt, agyResponseKey, agyStep, isAgyFinal } from "./shared/agy-transcript.js";
+import { agyConversation, agyConversationKey, agyPrompt, agyResponseKey, agyStep, isAgyFinal } from "./shared/agy-transcript.js";
 import { createAgyStore } from "./agy.js";
 
 export type AgentKind = "claude" | "codex" | "pi" | "opencode" | "agy";
@@ -114,7 +114,8 @@ const isInjectedPrompt = (text: string) => !text.trim() || /^\s*</.test(text) ||
  */
 export function createSessionReader(agent: AgentKind, sessionPath: string): (entry: unknown) => SessionEvent[] {
 	const responses = createResponseReader(agent, sessionPath);
-	let namedTitle = false, promptTitle = false;
+	// agy: the model can work on after an answer, when agy wakes it (a subagent's reply).
+	let namedTitle = false, promptTitle = false, agyAnswered = false;
 	const title = (text: string, named: boolean): SessionEvent[] => {
 		const cleaned = cleanTitle(text);
 		if (!cleaned || (!named && (namedTitle || promptTitle))) return [];
@@ -157,8 +158,12 @@ export function createSessionReader(agent: AgentKind, sessionPath: string): (ent
 		} else if (agent === "agy") {
 			const prompt = agyPrompt(e);
 			if (prompt !== undefined) {
+				agyAnswered = false;
 				events.push({ kind: "working", working: true, time: entryTime(e.created_at, time) });
 				if (!isInjectedPrompt(prompt)) events.push(...title(prompt, false));
+			} else if (agyStep(e)?.type === "PLANNER_RESPONSE") {
+				if (isAgyFinal(e)) agyAnswered = true;
+				else if (agyAnswered) { agyAnswered = false; events.push({ kind: "working", working: true, time: entryTime(e.created_at, time) }); }
 			}
 		} else {
 			if (e.type === "session_info" && typeof e.name === "string") events.push(...title(e.name, true));
@@ -198,7 +203,7 @@ export function createResponseReader(agent: AgentKind, sessionPath: string): (en
 	if (agent === "opencode") return entry => readOpenCodeResponse(entry, sessionPath);
 	if (agent === "agy") {
 		// A step's index names it only within its conversation. A step recorded again revises it.
-		const conversation = agyConversation(sessionPath) ?? sessionPath;
+		const conversation = agyConversationKey(sessionPath);
 		return entry => {
 			const e = agyStep(entry);
 			if (!e || !isAgyFinal(e)) return null;
@@ -358,14 +363,18 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 		return matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
 	}
 	const opencode = roots.opencode ? createOpenCodeStore(roots.opencode) : null;
+	// Conversations stay in brain/ for good: only recent ones are candidates.
+	const agyTranscripts = async () => {
+		const since = Date.now() - agyDayLimit * 24 * 60 * 60 * 1000;
+		return (await agy?.transcripts() ?? []).filter(file => file.mtimeMs >= since);
+	};
 	async function find(agent: AgentKind, cwd: string): Promise<SessionFile[]> {
 		if (agent === "claude") return roots.claude ? jsonlFilesNewestFirst(join(roots.claude, claudeProjectDirName(cwd)), agent) : [];
 		if (agent === "pi") return roots.pi ? jsonlFilesNewestFirst(join(roots.pi, piSessionDirName(cwd)), agent) : [];
 		if (agent === "opencode") return opencode?.list(cwd) ?? [];
 		if (agent === "agy") {
-			// Conversations stay in brain/ for good: only recent ones are candidates.
-			const since = Date.now() - agyDayLimit * 24 * 60 * 60 * 1000, matches: SessionFile[] = [];
-			for (const file of await agy?.transcripts() ?? []) if (file.mtimeMs >= since && await agy!.cwd(file.path) === cwd) matches.push({ agent, ...file });
+			const matches: SessionFile[] = [];
+			for (const file of await agyTranscripts()) if (await agy!.cwd(file.path) === cwd) matches.push({ agent, ...file });
 			return matches;
 		}
 		const matches: SessionFile[] = [];
@@ -376,7 +385,7 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 		let files: SessionFile[] = [];
 		if (agent === "opencode") files = await opencode?.list() ?? [];
 		else if (agent === "codex") files = await codexFiles();
-		else if (agent === "agy") files = (await agy?.transcripts() ?? []).map(file => ({ agent, ...file }));
+		else if (agent === "agy") files = (await agyTranscripts()).map(file => ({ agent, ...file }));
 		else {
 			const root = roots[agent];
 			if (!root) return [];

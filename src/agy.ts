@@ -5,7 +5,7 @@
 // internal to agy (seen in 1.3) and may change: a conversation whose metadata can't be read
 // has no recorded folder, so it isn't followed.
 import { readdir, stat } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openReadOnly } from "./opencode.js";
 import { agyConversation } from "./shared/agy-transcript.js";
@@ -17,13 +17,17 @@ const KNOWN_LIMIT = 4096;
 
 export const agyTranscriptPath = (root: string, conversation: string) => join(root, "brain", conversation, ".system_generated", "logs", "transcript_full.jsonl");
 
-/** A protobuf message's length-delimited fields by number, or null when the bytes aren't one. */
-export function protobufStrings(data: Uint8Array): Map<number, Uint8Array[]> | null {
-	const fields = new Map<number, Uint8Array[]>();
+/**
+ * The first value of each wanted length-delimited field of a protobuf message, or null when
+ * the bytes aren't one. Other fields are skipped, so memory stays bounded whatever the input.
+ */
+export function protobufStrings(data: Uint8Array, wanted: ReadonlySet<number>): Map<number, Uint8Array> | null {
+	const fields = new Map<number, Uint8Array>();
 	let at = 0;
+	// Up to ten bytes: a 64-bit value, exact only up to 2^53, which only sizes and keys need.
 	const varint = (): number | null => {
 		let value = 0;
-		for (let shift = 0; shift < 49; shift += 7) {
+		for (let shift = 0; shift < 70; shift += 7) {
 			if (at >= data.length) return null;
 			const byte = data[at++]!;
 			value += (byte & 0x7f) * 2 ** shift;
@@ -33,7 +37,7 @@ export function protobufStrings(data: Uint8Array): Map<number, Uint8Array[]> | n
 	};
 	while (at < data.length) {
 		const key = varint();
-		if (key === null) return null;
+		if (key === null || key > 0xffffffff) return null;
 		const field = Math.floor(key / 8), wire = key % 8;
 		if (field < 1) return null;
 		if (wire === 0) { if (varint() === null) return null; }
@@ -42,9 +46,7 @@ export function protobufStrings(data: Uint8Array): Map<number, Uint8Array[]> | n
 		else if (wire === 2) {
 			const length = varint();
 			if (length === null || at + length > data.length) return null;
-			const values = fields.get(field) ?? [];
-			values.push(data.subarray(at, at + length));
-			fields.set(field, values);
+			if (wanted.has(field) && !fields.has(field)) fields.set(field, data.subarray(at, at + length));
 			at += length;
 		} else return null;
 		if (at > data.length) return null;
@@ -55,22 +57,30 @@ export function protobufStrings(data: Uint8Array): Map<number, Uint8Array[]> | n
 const utf8 = (bytes: Uint8Array | undefined) => bytes ? new TextDecoder("utf-8", { fatal: false }).decode(bytes) : "";
 const workspacePath = (uri: string): string | null => {
 	if (!uri.startsWith("file:///")) return null;
-	try { const path = fileURLToPath(uri); return isAbsolute(path) ? normalize(path) : null; } catch { return null; }
+	try {
+		const path = fileURLToPath(uri);
+		if (!isAbsolute(path)) return null;
+		// Without a trailing separator, as the folder it is compared with.
+		const folder = normalize(path);
+		return folder === parse(folder).root ? folder : folder.replace(/[\\/]+$/, "");
+	} catch { return null; }
 };
+const METADATA_FIELDS: ReadonlySet<number> = new Set([1, 5, 6, 7]), WORKSPACE_FIELDS: ReadonlySet<number> = new Set([1]);
 
 /**
  * The folder a conversation's metadata records, or null for a subagent (field 5 names its
  * parent; field 6, the root conversation, is the conversation itself only at the top) or a
  * conversation without a workspace. Field 7 is the workspace URI; field 1 lists workspaces.
+ * Undefined while the metadata can't be read: empty, or not a protobuf message.
  */
-export function agyMetadataCwd(data: Uint8Array, conversation: string): string | null {
-	const fields = protobufStrings(data);
-	if (!fields) return null;
-	if (utf8(fields.get(5)?.[0])) return null;
-	const root = utf8(fields.get(6)?.[0]);
+export function agyMetadataCwd(data: Uint8Array, conversation: string): string | null | undefined {
+	const fields = data.length ? protobufStrings(data, METADATA_FIELDS) : null;
+	if (!fields) return undefined;
+	if (utf8(fields.get(5))) return null;
+	const root = utf8(fields.get(6));
 	if (root && root.toLowerCase() !== conversation.toLowerCase()) return null;
-	const listed = fields.get(1)?.[0];
-	return workspacePath(utf8(fields.get(7)?.[0])) ?? (listed ? workspacePath(utf8(protobufStrings(listed)?.get(1)?.[0])) : null);
+	const listed = fields.get(1);
+	return workspacePath(utf8(fields.get(7))) ?? (listed ? workspacePath(utf8(protobufStrings(listed, WORKSPACE_FIELDS)?.get(1))) : null);
 }
 
 export interface AgyTranscript { path: string; mtimeMs: number }
