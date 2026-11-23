@@ -3,10 +3,10 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { agyMetadataCwd, agyTranscriptPath, protobufStrings, readAgyTurnDetails, withAgyMedia } from "../dist/agy.js";
+import { agyMetadataCwd, agyTranscriptPath, createAgyMediaBudget, protobufStrings, readAgyTurnDetails, withAgyMedia } from "../dist/agy.js";
 import { createLiveLeases, createLiveSource } from "../dist/watch.js";
 import { resolveTheme } from "../dist/appearance.js";
 import { createResponseReader, createSessionFinder, createSessionReader, detectAgent, modelLabel, sessionShortId } from "../dist/sessions.js";
@@ -207,8 +207,8 @@ test("agy Working: a step recorded again belongs to its first turn; a step that 
 	assert.match(details.notices.join(" "), /input prompt is not available/);
 });
 
-// A small PNG (chunk checksums aren't checked), and one past the 512 KiB image limit.
-const pngChunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4, "ascii"); data.copy(b, 8); return b; };
+// A small, complete PNG, and with padding one past the 512 KiB image limit.
+const pngChunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4, "ascii"); data.copy(b, 8); b.writeUInt32BE(crc32(b.subarray(4, 8 + data.length)), 8 + data.length); return b; };
 const png = (side = 2, padding = 0) => { const head = Buffer.alloc(13); head.writeUInt32BE(side, 0); head.writeUInt32BE(side, 4); head[8] = 8; head[9] = 2;
 	return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), pngChunk("IHDR", head), ...(padding ? [pngChunk("tEXt", Buffer.alloc(padding))] : []), pngChunk("IDAT", deflateSync(Buffer.alloc(side * (1 + 3 * side)))), pngChunk("IEND", Buffer.alloc(0))]); };
 
@@ -256,6 +256,42 @@ test("agy images: Working and Live show the copy agy saved beside the transcript
 	await until(async () => (await source.snapshot(`s${next.step_index}`))?.status === "completed", "the live turn");
 	const live = await source.snapshot(`s${next.step_index}`);
 	assert.deepEqual(live.events.map(e => [e.kind, e.images?.[0]?.data === png().toString("base64")]), [["prompt", false], ["result", true], ["progress", false]]);
+});
+
+test("agy images: only agy's own layout and media folder; reads bounded by the images a turn shows", async t => {
+	step = 0;
+	const f = fixture(t);
+	const image = (folder, name) => { writeFileSync(join(folder, name), png()); return { mime_type: "image/png", uri: pathToFileURL(join(folder, name)).href }; };
+	const shown = record => record.media.filter(m => m.data).length;
+	// A media folder that is a link to another folder is not agy's.
+	const linked = f.conversation(SUB, { steps: [] }), elsewhere = join(f.base, "elsewhere-media");
+	mkdirSync(elsewhere); symlinkSync(elsewhere, join(dirname(linked), "media"));
+	assert.equal(shown(await withAgyMedia({ ...output("x"), media: [image(elsewhere, "step_1_media_0.png")] }, linked)), 0, "a linked media folder");
+	// A transcript outside agy's layout names no media folder, even with one beside it.
+	mkdirSync(join(f.cwd, "media"));
+	const exported = join(f.cwd, "transcript_full.jsonl");
+	writeFileSync(exported, "");
+	assert.equal(shown(await withAgyMedia({ ...output("x"), media: [image(join(f.cwd, "media"), "plot.png")] }, exported)), 0, "an exported transcript");
+	// Other attachments never take an image's place, and only `limit` images are read.
+	const path = f.conversation(ID, { steps: [] }), media = join(dirname(path), "media");
+	mkdirSync(media);
+	const pdfs = Array.from({ length: 9 }, (_, i) => ({ mime_type: "application/pdf", uri: pathToFileURL(join(media, `d${i}.pdf`)).href }));
+	const mixed = await withAgyMedia({ ...output("x"), media: [...pdfs, image(media, "after-pdfs.png")] }, path);
+	assert.deepEqual([mixed.media.length, Boolean(mixed.media[9].data)], [10, true]);
+	const nine = Array.from({ length: 9 }, (_, i) => image(media, `n${i}.png`));
+	assert.equal(shown(await withAgyMedia({ ...output("x"), media: nine }, path, 1)), 1);
+	// Live's budget: a turn's images, counted again from a prompt or after an answer.
+	const budget = createAgyMediaBudget();
+	const results = n => ({ ...output("x"), media: nine.slice(0, n) });
+	assert.deepEqual([prompt("a"), results(7), results(9), model({ content: "done" }), results(3), prompt("b"), results(9)].map(budget), [0, 7, 1, 0, 3, 0, 8]);
+	// Working reads images for the cards it shows: the last record of each step.
+	const steps = [prompt("Look"), model({ tool_calls: [runCommand("plot")] })];
+	const running = { ...output("Tool is running", "RUNNING"), media: nine.slice(0, 8) };
+	steps.push(running, model({ tool_calls: [runCommand("again")] }));
+	steps.push({ ...running, status: "DONE", content: "done", media: [image(media, "final.png")] }, model({ content: "Plotted." }));
+	f.append(path, ...steps);
+	const details = await readAgyTurnDetails(path, createResponseReader("agy", path)(steps.at(-1)));
+	assert.deepEqual(details.events.filter(e => e.kind === "result").map(e => e.images?.map(i => i.data ? "shown" : i.unavailable)), [["shown"]]);
 });
 
 test("agy on the command line: --agent agy, and the neutral palette under the agent theme", () => {

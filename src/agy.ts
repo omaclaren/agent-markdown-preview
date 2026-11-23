@@ -6,11 +6,11 @@
 // has no recorded folder, so it isn't followed. Also loads the images agy saves beside a
 // transcript for Working and Live (see addAgyMedia).
 import { constants } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, parse } from "node:path";
+import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, normalize, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openReadOnly } from "./opencode.js";
-import { agyConversation, agyPrompt, agyStep } from "./shared/agy-transcript.js";
+import { agyConversation, agyPrompt, agyStep, isAgyFinal } from "./shared/agy-transcript.js";
 import { readRecordTail } from "./shared/read-turn-details.js";
 import { TURN_IMAGE_BYTES, TURN_IMAGE_LIMIT } from "./shared/recorded-images.js";
 import { agyTurnRows, turnDetailsFromRecords } from "./shared/turn-details.js";
@@ -128,27 +128,47 @@ export function createAgyStore(root: string) {
 
 // ---- Images a tool read ----
 // agy saves a copy of each image a tool reads beside the transcript, in logs/media/, and
-// records only a reference to it ({ mime_type, uri }). Only such a copy is read: a file
-// directly in that folder once symbolic links are resolved, never the file the tool read or
-// anything else a reference names. Its bytes are added to the record (`data`), or why it
-// can't be shown (`unavailable`), and shown with the limits of images other agents record.
+// records only a reference to it ({ mime_type, uri }). Only such a copy is read, and only for
+// a transcript in agy's own layout (brain/<conversation>/.system_generated/logs/): a file
+// directly in that media folder, itself a real folder, once symbolic links are resolved; the
+// file opened is checked again to be the one there. Never the file the tool read or anything
+// else a reference names. Its bytes are added to the record (`data`), or why it can't be shown
+// (`unavailable`), and shown with the limits of images other agents record. Reads are bounded
+// by the images a turn shows (TURN_IMAGE_LIMIT).
 const MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-/** A result card shows up to nine images (turn-details.js). */
-const MEDIA_PER_RESULT = 9;
+const AGY_TRANSCRIPT = /[/\\]brain[/\\][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[/\\]\.system_generated[/\\]logs[/\\]transcript_full\.jsonl$/i;
+/** Live's backfill reads at most this many saved images, for the turns it keeps. */
+const LIVE_BACKFILL_IMAGES = 4 * TURN_IMAGE_LIMIT;
 type Media = Record<string, unknown>;
 
-async function savedImage(media: Media, folder: string): Promise<Media> {
+const isSavedImage = (m: unknown): m is Media & { mime_type: string } => Boolean(m) && typeof m === "object" && !Array.isArray(m)
+	&& typeof (m as Media).mime_type === "string" && ((m as Media).mime_type as string).toLowerCase().startsWith("image/");
+/** The images a tool result's step references. */
+const savedImages = (record: unknown): number => {
+	const e = agyStep(record);
+	return e?.type === "GENERIC" && Array.isArray(e.media) ? e.media.filter(isSavedImage).length : 0;
+};
+
+/** The media folder beside a transcript in agy's layout, as a real path, or null. */
+async function mediaFolder(transcriptPath: string): Promise<string | null> {
+	if (!AGY_TRANSCRIPT.test(transcriptPath)) return null;
+	try {
+		const folder = join(await realpath(dirname(transcriptPath)), "media");
+		return (await lstat(folder)).isDirectory() ? folder : null;
+	} catch { return null; }
+}
+
+async function savedImage(media: Media & { mime_type: string }, folder: string): Promise<Media> {
 	if (typeof media.data === "string" || typeof media.uri !== "string" || !media.uri.startsWith("file:///")) return media;
-	const type = typeof media.mime_type === "string" ? media.mime_type.toLowerCase() : "";
-	if (!type.startsWith("image/")) return media;
-	if (!MEDIA_TYPES.has(type)) return { ...media, unavailable: "format" };
+	if (!MEDIA_TYPES.has(media.mime_type.toLowerCase())) return { ...media, unavailable: "format" };
 	let file;
 	try {
-		const [path, inside] = await Promise.all([realpath(fileURLToPath(media.uri)), realpath(folder)]);
-		if (dirname(path) !== inside) return media;
+		const path = await realpath(fileURLToPath(media.uri));
+		if (dirname(path) !== folder) return media;
 		file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-		const info = await file.stat();
-		if (!info.isFile()) return media;
+		// The file opened is the one in the folder: no folder on the way was replaced meanwhile.
+		const [info, there, still] = await Promise.all([file.stat(), lstat(join(folder, basename(path))), realpath(folder)]);
+		if (!info.isFile() || info.dev !== there.dev || info.ino !== there.ino || still !== folder) return media;
 		if (info.size > TURN_IMAGE_BYTES) return { ...media, unavailable: "size" };
 		const bytes = Buffer.alloc(info.size);
 		let offset = 0;
@@ -162,41 +182,53 @@ async function savedImage(media: Media, folder: string): Promise<Media> {
 	finally { await file?.close().catch(() => {}); }
 }
 
-/** A tool result's step with the images agy saved for it, as far as they can be read. */
-export async function withAgyMedia(record: unknown, transcriptPath: string): Promise<unknown> {
+/** A tool result's step with the first `limit` images agy saved for it, as far as they can be read. */
+export async function withAgyMedia(record: unknown, transcriptPath: string, limit = TURN_IMAGE_LIMIT): Promise<unknown> {
 	const e = agyStep(record);
-	if (e?.type !== "GENERIC" || !Array.isArray(e.media) || !e.media.length) return record;
-	const folder = join(dirname(transcriptPath), "media");
-	const media = await Promise.all(e.media.slice(0, MEDIA_PER_RESULT).map((m: unknown) => m && typeof m === "object" && !Array.isArray(m) ? savedImage(m as Media, folder) : m));
-	return { ...e, media };
+	if (limit < 1 || !savedImages(e)) return record;
+	const folder = await mediaFolder(transcriptPath);
+	if (!folder) return record;
+	let left = limit;
+	return { ...e, media: await Promise.all(e.media.map((m: unknown) => isSavedImage(m) && left-- > 0 ? savedImage(m, folder) : m)) };
 }
 
 /**
- * Adds saved images to the tool results in rows `from` to `to` of a transcript, in place, up to
- * the images one turn shows (TURN_IMAGE_LIMIT); later results keep their references only.
+ * How many saved images each record, in file order, may have read: the images a turn shows,
+ * counted again from each typed prompt and after each answer, where Live can start a turn.
  */
-export async function addAgyMedia(rows: unknown[], transcriptPath: string, from = 0, to = rows.length - 1): Promise<void> {
-	let left = TURN_IMAGE_LIMIT;
-	for (let i = Math.max(0, from); i <= to && i < rows.length && left > 0; i++) {
-		const e = agyStep(rows[i]);
-		if (e?.type !== "GENERIC" || !Array.isArray(e.media) || !e.media.length) continue;
-		left -= Math.min(e.media.length, MEDIA_PER_RESULT);
-		rows[i] = await withAgyMedia(rows[i], transcriptPath);
+export function createAgyMediaBudget(): (record: unknown) => number {
+	let left = TURN_IMAGE_LIMIT, answered = false;
+	return record => {
+		const e = agyStep(record);
+		if (!e) return 0;
+		if (answered || agyPrompt(e) !== undefined) left = TURN_IMAGE_LIMIT;
+		answered = isAgyFinal(e);
+		const n = Math.min(left, savedImages(e));
+		left -= n;
+		return n;
+	};
+}
+
+/** Adds saved images to the turns Live keeps from a backfill (from the last two prompts); returns the budget to go on with. */
+export async function addAgyLiveMedia(rows: unknown[], transcriptPath: string): Promise<(record: unknown) => number> {
+	const budget = createAgyMediaBudget();
+	const prompts = [...rows.keys()].filter(i => agyPrompt(rows[i]) !== undefined);
+	let reads = LIVE_BACKFILL_IMAGES;
+	for (let i = prompts.length >= 2 ? prompts.at(-2)! : 0; i < rows.length; i++) {
+		const n = Math.min(budget(rows[i]), reads);
+		if (n) { rows[i] = await withAgyMedia(rows[i], transcriptPath, n); reads -= n; }
 	}
+	return budget;
 }
 
-/** Adds saved images to the turns Live keeps from a backfill: the last two, each from its prompt. */
-export async function addAgyLiveMedia(rows: unknown[], transcriptPath: string): Promise<void> {
-	const starts = [...rows.keys()].filter(i => agyPrompt(rows[i]) !== undefined).slice(-2);
-	if (starts.length < 2) starts.unshift(0);
-	for (const [k, from] of starts.entries()) await addAgyMedia(rows, transcriptPath, from, (starts[k + 1] ?? rows.length) - 1);
-}
-
-/** Working for an agy answer: its turn as recorded, with the images agy saved for it. */
+/** Working for an agy answer: its turn as recorded, with the images agy saved for the cards it shows. */
 export async function readAgyTurnDetails(path: string, target: { key: string; markdown: string }, signal?: AbortSignal) {
 	const { records, incomplete } = await readRecordTail(path, signal);
-	const turn = agyTurnRows(records, target);
-	if (turn) await addAgyMedia(records, path, turn.start, turn.end);
-	signal?.throwIfAborted();
+	let left = TURN_IMAGE_LIMIT;
+	for (const i of agyTurnRows(records, target)?.shown ?? []) {
+		const n = Math.min(left, savedImages(records[i]));
+		if (n) { records[i] = await withAgyMedia(records[i], path, n); left -= n; }
+		signal?.throwIfAborted();
+	}
 	return turnDetailsFromRecords("agy", records, target, incomplete);
 }

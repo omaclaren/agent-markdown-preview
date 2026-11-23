@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { basename, dirname, resolve } from "node:path";
 import { ALL_PROJECTS_SESSION_LIMIT, createSessionMonitor, type SessionMonitor, type SessionState } from "./monitor.js";
 import { localDocumentRenderer } from "./linked-documents.js";
-import { addAgyLiveMedia, readAgyTurnDetails, withAgyMedia } from "./agy.js";
+import { addAgyLiveMedia, createAgyMediaBudget, readAgyTurnDetails, withAgyMedia } from "./agy.js";
 import { createOpenCodeStore, openCodeSessionId, openCodeSessionPath, type OpenCodeLiveEvent, type OpenCodeLiveTurn, type OpenCodeStore } from "./opencode.js";
 import {
 	buildBrowserHtmlFromPandocFragment, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX,
@@ -136,26 +136,35 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 	};
 	const start = (): Lease => {
 		if (!leases.take()) throw new LiveBusyError("Live Working is following as many sessions as it allows.");
-		let pending: { record: unknown; offset?: number }[] = [], pendingBytes = 0, overflow = false, end = Infinity;
+		let pending: { record: unknown; length: number; offset?: number }[] = [], pendingBytes = 0, overflow = false, end = Infinity;
 		const created: Lease = { ready: Promise.resolve(), unsubscribe: () => {} };
 		// Subscribe before backfilling; records read twice are ignored by their ids. A
 		// line that starts before the backfill's end is not newer than it: a lagging
 		// tail can deliver an earlier line, which must never be projected after newer
 		// ones. A tail that stops or starts again resets the subscription (see onRecord).
 		const older = (offset?: number) => offset !== undefined && offset < end;
-		// agy records only references to the images it saved: they are read first, in order.
-		const media = session.agent === "agy";
-		let queue = Promise.resolve();
-		const deliver = (projector: Projector, record: unknown, observedAt: number) => {
-			if (!media) { projector.push(record, observedAt); return; }
-			queue = queue.then(async () => { projector.push(await withAgyMedia(record, session.path), observedAt); }).catch(() => {});
+		// agy records only references to the images it saved: they are read first, in order,
+		// up to the images a turn shows. Records waiting for them are bounded like pending
+		// records (too many drops the projection, which the next request reads afresh), and
+		// none is read or projected once the projection is dropped.
+		let images = session.agent === "agy" ? createAgyMediaBudget() : undefined, queue = Promise.resolve(), queued = 0, queuedBytes = 0;
+		const deliver = (projector: Projector, record: unknown, length: number, observedAt: number) => {
+			if (!images) { projector.push(record, observedAt); return; }
+			const n = images(record);
+			queued++; queuedBytes += length;
+			if (queued > LIVE_PENDING_LIMIT || queuedBytes > LIVE_PENDING_BYTES) { if (lease === created) release(); return; }
+			queue = queue.then(async () => {
+				if (lease !== created) return;
+				const loaded = n ? await withAgyMedia(record, session.path, n) : record;
+				if (lease === created) projector.push(loaded, observedAt);
+			}).catch(() => {}).finally(() => { queued--; queuedBytes -= length; });
 		};
 		created.unsubscribe = monitor.onRecord(session.id, (record, length, offset) => {
-			if (created.projector) { if (!older(offset)) deliver(created.projector, record, Date.now()); return; }
+			if (created.projector) { if (!older(offset)) deliver(created.projector, record, length, Date.now()); return; }
 			if (overflow) return;
 			pendingBytes += length;
 			if (pending.length >= LIVE_PENDING_LIMIT || pendingBytes > LIVE_PENDING_BYTES) { overflow = true; pending = []; return; }
-			pending.push({ record, offset });
+			pending.push({ record, length, offset });
 		}, () => {
 			// This projection describes the old file: never mix the two.
 			if (lease === created) release();
@@ -163,7 +172,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 		created.ready = (async () => {
 			for (let attempt = 1; ; attempt++) {
 				const read = await leases.exclusive(() => readRecordTail(session.path));
-				if (media) await addAgyLiveMedia(read.records, session.path);
+				if (images) images = await addAgyLiveMedia(read.records, session.path);
 				// Records dropped while reading are in the file now: read it again. Never
 				// accept a read that missed records; a later request starts over.
 				if (overflow) {
@@ -174,7 +183,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 				const loadedAt = Date.now();
 				for (const record of read.records) projector.push(record, loadedAt, true);
 				end = read.end;
-				for (const { record, offset } of pending.splice(0)) if (!older(offset)) deliver(projector, record, Date.now());
+				for (const { record, length, offset } of pending.splice(0)) if (!older(offset)) deliver(projector, record, length, Date.now());
 				// From here records go to the projector, after these.
 				created.projector = projector;
 				await queue;
