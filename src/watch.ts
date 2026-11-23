@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { basename, dirname, resolve } from "node:path";
 import { ALL_PROJECTS_SESSION_LIMIT, createSessionMonitor, type SessionMonitor, type SessionState } from "./monitor.js";
 import { localDocumentRenderer } from "./linked-documents.js";
+import { addAgyLiveMedia, readAgyTurnDetails, withAgyMedia } from "./agy.js";
 import { createOpenCodeStore, openCodeSessionId, openCodeSessionPath, type OpenCodeLiveEvent, type OpenCodeLiveTurn, type OpenCodeStore } from "./opencode.js";
 import {
 	buildBrowserHtmlFromPandocFragment, DEFAULT_BROWSER_PREVIEW_FONT_SIZE_PX,
@@ -115,7 +116,7 @@ const liveSourceFor = (monitor: Pick<SessionMonitor, "onRecord">, session: { id:
 	session.agent === "opencode" ? createOpenCodeLiveSource(session) : createLiveSource(monitor, session);
 
 /**
- * Live recorded activity for one Claude Code, Pi or Codex session (OpenCode: see
+ * Live recorded activity for one Claude Code, Pi, Codex or agy session (OpenCode: see
  * createOpenCodeLiveSource). Nothing is allocated
  * until a live page asks; each request renews a lease, and 30 s without one
  * drops the projection and the record subscription. A truncated or replaced
@@ -142,8 +143,15 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 		// tail can deliver an earlier line, which must never be projected after newer
 		// ones. A tail that stops or starts again resets the subscription (see onRecord).
 		const older = (offset?: number) => offset !== undefined && offset < end;
+		// agy records only references to the images it saved: they are read first, in order.
+		const media = session.agent === "agy";
+		let queue = Promise.resolve();
+		const deliver = (projector: Projector, record: unknown, observedAt: number) => {
+			if (!media) { projector.push(record, observedAt); return; }
+			queue = queue.then(async () => { projector.push(await withAgyMedia(record, session.path), observedAt); }).catch(() => {});
+		};
 		created.unsubscribe = monitor.onRecord(session.id, (record, length, offset) => {
-			if (created.projector) { if (!older(offset)) created.projector.push(record, Date.now()); return; }
+			if (created.projector) { if (!older(offset)) deliver(created.projector, record, Date.now()); return; }
 			if (overflow) return;
 			pendingBytes += length;
 			if (pending.length >= LIVE_PENDING_LIMIT || pendingBytes > LIVE_PENDING_BYTES) { overflow = true; pending = []; return; }
@@ -155,6 +163,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 		created.ready = (async () => {
 			for (let attempt = 1; ; attempt++) {
 				const read = await leases.exclusive(() => readRecordTail(session.path));
+				if (media) await addAgyLiveMedia(read.records, session.path);
 				// Records dropped while reading are in the file now: read it again. Never
 				// accept a read that missed records; a later request starts over.
 				if (overflow) {
@@ -165,8 +174,10 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 				const loadedAt = Date.now();
 				for (const record of read.records) projector.push(record, loadedAt, true);
 				end = read.end;
-				for (const { record, offset } of pending.splice(0)) if (!older(offset)) projector.push(record, Date.now());
+				for (const { record, offset } of pending.splice(0)) if (!older(offset)) deliver(projector, record, Date.now());
+				// From here records go to the projector, after these.
 				created.projector = projector;
+				await queue;
 				return;
 			}
 		})();
@@ -325,6 +336,7 @@ async function createResponseView(options: ViewOptions): Promise<ResponseView> {
 		return caption ? `*${caption.replace(/\s+/g, " ").trim().replace(/[!-/:-@[-`{-~]/g, c => `&#${c.charCodeAt(0)};`)}*\n\n${response.markdown}` : response.markdown;
 	};
 	const detailsFor = (response?: AgentResponse) => options.turnDetails && response ? async (signal: AbortSignal) => {
+		if (response.agent === "agy") return readAgyTurnDetails(response.sessionPath, response, signal);
 		if (response.agent !== "opencode") return readTurnDetails(response.sessionPath, response.agent, response, signal);
 		const store = createOpenCodeStore(response.sessionPath.slice(0, response.sessionPath.lastIndexOf("#")));
 		try { return await store.turnDetails(response, signal); } finally { store.close(); }

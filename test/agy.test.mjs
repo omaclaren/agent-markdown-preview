@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { agyMetadataCwd, agyTranscriptPath, protobufStrings } from "../dist/agy.js";
+import { agyMetadataCwd, agyTranscriptPath, protobufStrings, readAgyTurnDetails, withAgyMedia } from "../dist/agy.js";
+import { createLiveLeases, createLiveSource } from "../dist/watch.js";
 import { resolveTheme } from "../dist/appearance.js";
 import { createResponseReader, createSessionFinder, createSessionReader, detectAgent, modelLabel, sessionShortId } from "../dist/sessions.js";
 import { createSessionMonitor } from "../dist/monitor.js";
@@ -203,6 +205,57 @@ test("agy Working: a step recorded again belongs to its first turn; a step that 
 	const details = turnDetailsFromRecords("agy", records, pasted);
 	assert.deepEqual(details.events, []);
 	assert.match(details.notices.join(" "), /input prompt is not available/);
+});
+
+// A small PNG (chunk checksums aren't checked), and one past the 512 KiB image limit.
+const pngChunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4, "ascii"); data.copy(b, 8); return b; };
+const png = (side = 2, padding = 0) => { const head = Buffer.alloc(13); head.writeUInt32BE(side, 0); head.writeUInt32BE(side, 4); head[8] = 8; head[9] = 2;
+	return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), pngChunk("IHDR", head), ...(padding ? [pngChunk("tEXt", Buffer.alloc(padding))] : []), pngChunk("IDAT", deflateSync(Buffer.alloc(side * (1 + 3 * side)))), pngChunk("IEND", Buffer.alloc(0))]); };
+
+test("agy images: Working and Live show the copy agy saved beside the transcript, and no other file", async t => {
+	step = 0;
+	const f = fixture(t);
+	const path = f.conversation(ID, { steps: [] });
+	const media = join(dirname(path), "media");
+	mkdirSync(media);
+	const saved = (name, bytes) => { writeFileSync(join(media, name), bytes); return { mime_type: "image/png", uri: pathToFileURL(join(media, name)).href }; };
+	writeFileSync(join(f.cwd, "outside.png"), png());
+	symlinkSync(join(f.cwd, "outside.png"), join(media, "step_9_media_0.png"));
+	const kept = saved("step_2_media_0.png", png());
+	const references = [
+		kept,
+		{ mime_type: "image/png", uri: pathToFileURL(join(f.cwd, "outside.png")).href },
+		{ mime_type: "image/png", uri: pathToFileURL(join(media, "step_9_media_0.png")).href },
+		{ ...saved("step_2_media_1.png", png(2, 600 * 1024)) },
+		{ ...saved("step_2_media_2.gif", Buffer.from("GIF89a")), mime_type: "image/gif" },
+		{ mime_type: "application/pdf", uri: pathToFileURL(join(media, "notes.pdf")).href },
+	];
+	const steps = [prompt("Look at the plot"), model({ tool_calls: [{ name: "read_file", args: { Path: "/p/plot.png" } }] })];
+	const result = { ...output("Showing binary file of type image/png"), media: references };
+	steps.push(result, model({ content: "A square." }));
+	const loaded = (await withAgyMedia(result, path)).media;
+	assert.equal(loaded[0].data, png().toString("base64"), "the saved copy");
+	assert.deepEqual(loaded.slice(1).map(m => m.data ?? m.unavailable ?? "-"), ["-", "-", "size", "format", "-"], "nothing outside the media folder, through a link, too large, or not an image");
+	assert.equal(result.media[0].data, undefined, "the record read is not changed");
+	f.append(path, ...steps);
+	const answer = createResponseReader("agy", path)(steps[3]);
+	const working = await readAgyTurnDetails(path, answer);
+	const card = working.events.find(e => e.kind === "result");
+	assert.deepEqual(card.images.map(i => i.data === undefined ? i.unavailable : "shown"), ["shown", "missing", "missing", "size", "format"]);
+	assert.match(working.notices.join(" "), /Non-image file attachments are omitted/);
+	// Live: the backfill, then a record as it arrives, still in order with the answer after it.
+	const listeners = new Set();
+	const monitor = { onRecord(id, listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+	const source = createLiveSource(monitor, { id: "agy-1", path, agent: "agy" }, { leases: createLiveLeases() });
+	t.after(() => source.close());
+	const first = await source.current();
+	assert.equal((await source.snapshot(first)).events.find(e => e.kind === "result").images[0].data, png().toString("base64"));
+	const next = prompt("Again");
+	const again = { ...output("Showing binary file of type image/png"), media: [kept] };
+	for (const listener of listeners) for (const record of [next, again, model({ content: "Same square." })]) listener(record, 100);
+	await until(async () => (await source.snapshot(`s${next.step_index}`))?.status === "completed", "the live turn");
+	const live = await source.snapshot(`s${next.step_index}`);
+	assert.deepEqual(live.events.map(e => [e.kind, e.images?.[0]?.data === png().toString("base64")]), [["prompt", false], ["result", true], ["progress", false]]);
 });
 
 test("agy on the command line: --agent agy, and the neutral palette under the agent theme", () => {
