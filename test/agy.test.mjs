@@ -155,9 +155,9 @@ test("agy Working: a turn from its typed prompt to the answer, with tools, resul
 	const records = [
 		prompt("Earlier"), model({ content: "Earlier answer" }),
 		prompt("Run the checks"), notice("SECRET-NOTICE"),
-		model({ thinking: "Plan the run", content: "Running them.", tool_calls: [runCommand("npm test"), { name: "read_file", args: { Path: "/p/log.txt" } }] }),
+		model({ thinking: "Plan the run\n\n", content: "\nRunning them.\n", tool_calls: [runCommand("npm test"), { name: "read_file", args: { Path: "/p/log.txt" } }] }),
 		output("Tool is running as a background task", "RUNNING"),
-		output("log contents"),
+		output("log contents\n\n"),
 		model({ content: "Waiting for a helper." }),
 		notice("[Message] sender=helper content=SECRET-REPLY"),
 		model({ content: "All green." }),

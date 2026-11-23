@@ -1,6 +1,6 @@
 # agent-markdown-preview
 
-Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://opencode.ai) or [agy](https://antigravity.google) (Google's Antigravity CLI). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
+Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://opencode.ai) or [agy](https://antigravity.google). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
 Run it in a project directory for an index of that project’s recent sessions, or use `agent-markdown-preview --all` to browse across directories, grouped by project. Each project also has a merged preview of the latest completed response from any of its sessions.
 
