@@ -162,7 +162,7 @@ test("agy Working: a turn from its typed prompt to the answer, with tools, resul
 		notice("[Message] sender=helper content=SECRET-REPLY"),
 		model({ content: "All green." }),
 	];
-	records.splice(7, 0, { ...records[5], status: "DONE", content: "Created At: x\nCompleted At: y\n12 tests passed" });
+	records.splice(7, 0, { ...records[5], status: "DONE", content: `${"Created At: 2026-11-23T22:02:53+13:00\nCompleted At: 2026-11-23T22:02:53+13:00\n".repeat(2)}12 tests passed` }); // agy can record its timing lines twice
 	const read = createResponseReader("agy", path);
 	const [earlier, waiting, final] = records.map(r => read(r)).filter(Boolean);
 	assert.deepEqual([earlier.markdown, waiting.markdown, final.markdown], ["Earlier answer", "Waiting for a helper.", "All green."]);
