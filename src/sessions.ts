@@ -7,10 +7,12 @@ import { isAbsolute, join, normalize } from "node:path";
 import { extractAssistantMarkdownContent } from "./render.js";
 import { createOpenCodeStore, openCodeSessionId, readOpenCodeResponse } from "./opencode.js";
 import { createClaudeResponseAssembler, isClaudeFinal } from "./shared/claude-response.js";
+import { agyConversation, agyPrompt, agyResponseKey, agyStep, isAgyFinal } from "./shared/agy-transcript.js";
+import { createAgyStore } from "./agy.js";
 
-export type AgentKind = "claude" | "codex" | "pi" | "opencode";
-export const AGENTS: readonly AgentKind[] = ["claude", "codex", "pi", "opencode"];
-export const AGENT_LABELS: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" };
+export type AgentKind = "claude" | "codex" | "pi" | "opencode" | "agy";
+export const AGENTS: readonly AgentKind[] = ["claude", "codex", "pi", "opencode", "agy"];
+export const AGENT_LABELS: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode", agy: "agy" };
 
 /**
  * A readable name for a recorded model ID: "claude-opus-5-5-20261001" is
@@ -62,6 +64,8 @@ export interface SessionRoots {
 	pi?: string;
 	/** SQLite database file, not the legacy JSON storage directory. */
 	opencode?: string;
+	/** agy's data directory, holding brain/ and conversations/. */
+	agy?: string;
 }
 
 export function defaultSessionRoots(env: NodeJS.ProcessEnv = process.env): Required<SessionRoots> {
@@ -70,6 +74,7 @@ export function defaultSessionRoots(env: NodeJS.ProcessEnv = process.env): Requi
 		codex: join(env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
 		pi: join(homedir(), ".pi", "agent", "sessions"),
 		opencode: join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "opencode.db"),
+		agy: join(homedir(), ".gemini", "antigravity-cli"),
 	};
 }
 
@@ -149,6 +154,12 @@ export function createSessionReader(agent: AgentKind, sessionPath: string): (ent
 				const text = e.text ?? userText(e.parts);
 				if (typeof text === "string" && !isInjectedPrompt(text)) events.push(...title(text, false));
 			}
+		} else if (agent === "agy") {
+			const prompt = agyPrompt(e);
+			if (prompt !== undefined) {
+				events.push({ kind: "working", working: true, time: entryTime(e.created_at, time) });
+				if (!isInjectedPrompt(prompt)) events.push(...title(prompt, false));
+			}
 		} else {
 			if (e.type === "session_info" && typeof e.name === "string") events.push(...title(e.name, true));
 			const message = record(e.message);
@@ -173,7 +184,10 @@ export function sessionShortId(path: string): string {
 	if (opencode) return opencode.slice(-4);
 	const name = path.split(/[/\\]/).at(-1) ?? path;
 	const uuid = name.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-	return uuid ? uuid[0].slice(-4) : name.replace(/\.jsonl$/, "").slice(0, 4);
+	if (uuid) return uuid[0].slice(-4);
+	// An agy transcript is named for its kind; its conversation is the folder.
+	const conversation = agyConversation(path);
+	return conversation ? conversation.slice(-4) : name.replace(/\.jsonl$/, "").slice(0, 4);
 }
 
 /**
@@ -182,6 +196,15 @@ export function sessionShortId(path: string): string {
  */
 export function createResponseReader(agent: AgentKind, sessionPath: string): (entry: unknown) => AgentResponse | null {
 	if (agent === "opencode") return entry => readOpenCodeResponse(entry, sessionPath);
+	if (agent === "agy") {
+		// A step's index names it only within its conversation. A step recorded again revises it.
+		const conversation = agyConversation(sessionPath) ?? sessionPath;
+		return entry => {
+			const e = agyStep(entry);
+			if (!e || !isAgyFinal(e)) return null;
+			return { agent, key: agyResponseKey(conversation, e), markdown: e.content, ...recordedModel(e.model), time: entryTime(e.created_at, Date.now()), sessionPath };
+		};
+	}
 	if (agent === "claude") {
 		const assemble = createClaudeResponseAssembler();
 		return entry => {
@@ -299,11 +322,13 @@ async function readSessionCwd(path: string, agent: AgentKind): Promise<string | 
 }
 
 /** Finds session logs for one directory, or recent candidates across projects. */
-export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(), { codexDayLimit = 45 } = {}) {
+export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(), { codexDayLimit = 45, agyDayLimit = 45 } = {}) {
 	// Cache header reads until a log changes, including failed/partial reads.
 	// Bound this cache as the all-projects index may visit many folders over time.
 	const cwdCache = new Map<string, { stamp: string; cwd: string | null }>();
+	const agy = roots.agy ? createAgyStore(roots.agy) : null;
 	async function recordedCwd(file: SessionFile): Promise<string | null> {
+		if (file.agent === "agy") return agy?.cwd(file.path) ?? null;
 		const info = await stat(file.path).catch(() => null);
 		if (!info) return null;
 		const stamp = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
@@ -337,6 +362,12 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 		if (agent === "claude") return roots.claude ? jsonlFilesNewestFirst(join(roots.claude, claudeProjectDirName(cwd)), agent) : [];
 		if (agent === "pi") return roots.pi ? jsonlFilesNewestFirst(join(roots.pi, piSessionDirName(cwd)), agent) : [];
 		if (agent === "opencode") return opencode?.list(cwd) ?? [];
+		if (agent === "agy") {
+			// Conversations stay in brain/ for good: only recent ones are candidates.
+			const since = Date.now() - agyDayLimit * 24 * 60 * 60 * 1000, matches: SessionFile[] = [];
+			for (const file of await agy?.transcripts() ?? []) if (file.mtimeMs >= since && await agy!.cwd(file.path) === cwd) matches.push({ agent, ...file });
+			return matches;
+		}
 		const matches: SessionFile[] = [];
 		for (const file of await codexFiles()) if (await recordedCwd(file) === cwd) matches.push(file);
 		return matches;
@@ -345,6 +376,7 @@ export function createSessionFinder(roots: SessionRoots = defaultSessionRoots(),
 		let files: SessionFile[] = [];
 		if (agent === "opencode") files = await opencode?.list() ?? [];
 		else if (agent === "codex") files = await codexFiles();
+		else if (agent === "agy") files = (await agy?.transcripts() ?? []).map(file => ({ agent, ...file }));
 		else {
 			const root = roots[agent];
 			if (!root) return [];
@@ -368,8 +400,10 @@ export async function detectAgent(path: string): Promise<AgentKind | null> {
 	if (/[/\\]\.claude[/\\]/.test(path)) return "claude";
 	if (/[/\\]\.codex[/\\]/.test(path)) return "codex";
 	if (/[/\\]\.pi[/\\]/.test(path)) return "pi";
+	if (/[/\\]\.gemini[/\\]antigravity-cli[/\\]/.test(path)) return "agy";
 	try {
 		const first = record(await readFirstJsonLine(path));
+		if (agyStep(first)) return "agy";
 		if (first?.type === "session_meta") return "codex";
 		if (first?.type === "session") return "pi";
 		if (first && ("sessionId" in first || "session_id" in first)) return "claude";

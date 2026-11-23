@@ -13,7 +13,7 @@ Usage:
   agent-markdown-preview <file> [options]   Watch a Markdown, LaTeX, code or diff file
 
 Options:
-  --agent <name|all>              claude, codex, pi, opencode (default: all). Repeatable/comma-separated.
+  --agent <name|all>              claude, codex, pi, opencode, agy (default: all). Repeatable/comma-separated.
   -a, --all, --all-projects      Index recent sessions across folders, grouped by project.
   --merged                        Open the merged preview directly instead of the session index.
   --session <path|ses_id>         Preview one JSONL log or OpenCode session ID directly.
@@ -64,7 +64,7 @@ function parseArgs(argv: string[]) {
 			for (const name of value().split(",")) {
 				if (name === "all") options.agents.push(...AGENTS);
 				else if ((AGENTS as readonly string[]).includes(name)) options.agents.push(name as AgentKind);
-				else fail(`Unknown agent "${name}". Use claude, codex, pi, opencode or all.`);
+				else fail(`Unknown agent "${name}". Use claude, codex, pi, opencode, agy or all.`);
 			}
 		}
 		else if (arg === "--session") options.session = value();

@@ -1,6 +1,6 @@
 # agent-markdown-preview
 
-Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev) or [OpenCode](https://opencode.ai). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
+Preview coding-agent responses in the browser while you work with [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://opencode.ai) or [agy](https://antigravity.google) (Google's Antigravity CLI). Each session gets a tab that shows its responses rendered with math, syntax highlighting and Mermaid diagrams, and can follow each turn live, showing prompts, tool calls and results as the agent records them. It reads the session history each agent already writes, so the agents need no setup. It also previews local Markdown, LaTeX, code and diff files.
 
 Run it in a project directory for an index of that project’s recent sessions, or use `agent-markdown-preview --all` to browse across directories, grouped by project. Each project also has a merged preview of the latest completed response from any of its sessions.
 
@@ -26,7 +26,7 @@ npm install -g agent-markdown-preview
 
 Or run it without installing, with `npx agent-markdown-preview`.
 
-You need Node.js 22 or later (22.13+ to read OpenCode's database) and [Pandoc](https://pandoc.org/installing.html) (`brew install pandoc` on macOS; set `PANDOC_PATH` if it is not on your `PATH`). Mermaid diagrams, the MathJax fallback for some equations and PDF figures load pinned modules from jsDelivr or unpkg the first time a page needs them, so those features need network access. It is developed and tested on macOS, should also work on Linux, and is untested on Windows.
+You need Node.js 22 or later (22.13+ to read OpenCode's and agy's databases) and [Pandoc](https://pandoc.org/installing.html) (`brew install pandoc` on macOS; set `PANDOC_PATH` if it is not on your `PATH`). Mermaid diagrams, the MathJax fallback for some equations and PDF figures load pinned modules from jsDelivr or unpkg the first time a page needs them, so those features need network access. It is developed and tested on macOS, should also work on Linux, and is untested on Windows.
 
 ## Quick start
 
@@ -57,7 +57,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 
 | Option | Description |
 |--------|-------------|
-| `--agent claude,codex,pi,opencode` | Agents to follow (default: all) |
+| `--agent claude,codex,pi,opencode,agy` | Agents to follow (default: all) |
 | `--cwd <dir>` | Project directory whose sessions to follow (default: current directory) |
 | `-a`, `--all`, `--all-projects` | Follow recent sessions from every folder |
 | `--opencode-db <path>` | OpenCode database to read instead of the default |
@@ -72,7 +72,7 @@ Working shows recorded prompts and tool output to anyone with the tab's link. Fo
 
 Working shows a response's recorded prompts, progress, any exposed reasoning, and its tool calls and results. Prompts start expanded and activity starts folded. Commands, file reads and edits have readable views, with the recorded JSON available, and recorded images can be enlarged. Code sent to a shared REPL (pi-repl, agent-repl or [Pi Studio](https://github.com/omaclaren/pi-studio)) shows its runtime and code, and its result shows just the output, headed with the call it belongs to. Claude's questions show their options and the answers given. **Ctrl+Alt+P** and **Ctrl+Alt+W** (Control+Option on macOS) switch between Preview and Working. **Ctrl+Alt+L** goes to the latest response in Preview from any view, including an earlier Working page. Working is available in session previews, not file previews. **Width**, at the top of Working, Live and the REPL page, switches between a narrow column and the window's width, up to 1100 pixels; the browser remembers the choice.
 
-With `--live` and **Follow activity** on, the page moves to Working when a turn starts and back to Preview when it ends. If you have scrolled up or moved to another page, it leaves you there. Updates arrive as the agent records them, not token by token, so a tool call shows "No result recorded yet" until its result is recorded. For OpenCode (v2 sessions), a text block appears once OpenCode has recorded it whole, and a tool's output when the tool finishes. A Codex task that ends without a final answer, such as a compaction, returns to the latest Preview. A reverted Codex thread continues in a new session log, which the index lists separately. Anything Live leaves out, such as cards beyond its display limits, is listed in its status line.
+With `--live` and **Follow activity** on, the page moves to Working when a turn starts and back to Preview when it ends. If you have scrolled up or moved to another page, it leaves you there. Updates arrive as the agent records them, not token by token, so a tool call shows "No result recorded yet" until its result is recorded. For OpenCode (v2 sessions), a text block appears once OpenCode has recorded it whole, and a tool's output when the tool finishes. A Codex task that ends without a final answer, such as a compaction, returns to the latest Preview. A reverted Codex thread continues in a new session log, which the index lists separately. agy records no end for a turn, so its turn ends at an answer; if agy answers again in the same turn, as when a subagent replies, the turn continues. Anything Live leaves out, such as cards beyond its display limits, is listed in its status line.
 
 **Privacy:** prompts, tool output and recorded images can contain secrets, and nothing is redacted. Share these links only with people you trust. Working uses its own remembered credentials, so links you shared from an ordinary preview don't gain this access. Stopping the `--live` or `--working` process revokes it.
 
@@ -129,17 +129,18 @@ A Pi theme `.json` file gives a single fixed theme. Inside Pi, pi-markdown-previ
 
 ### How responses are found
 
-Claude Code, Codex and Pi write JSONL logs; OpenCode uses SQLite. agent-markdown-preview reads them without changing them.
+Claude Code, Codex, Pi and agy write JSONL logs; OpenCode uses SQLite. agent-markdown-preview reads them without changing them.
 
 | Agent | Session logs | Final response of a turn |
 |---|---|---|
 | Claude Code | `~/.claude/projects/<directory>/*.jsonl` (respects `CLAUDE_CONFIG_DIR`) | the assistant message that ends the turn (`stop_reason: end_turn`), with its text blocks joined |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (respects `CODEX_HOME`), matched by the working directory recorded in each file | `task_complete` event, `last_agent_message` |
 | Pi | `~/.pi/agent/sessions/--<directory>--/*.jsonl` | assistant message with `stopReason: "stop"` |
+| agy | `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript_full.jsonl`, matched by the workspace recorded in `conversations/<conversation>.db` | a finished model step (`PLANNER_RESPONSE`) with text and no tool calls |
 | OpenCode v1 | `~/.local/share/opencode/opencode.db` (respects `XDG_DATA_HOME`) | completed assistant message with a terminal finish reason, text from its separate parts |
 | OpenCode v2 | Same database; `session_v2` / `session_message` | last completed text answer before the turn's explicit `idle` marker; ordered by message sequence |
 
-Subagent sessions are left out, and Gemini CLI isn't supported yet. These formats are internal to each agent and can change between releases. `--agent opencode` covers both OpenCode versions, and `--session` also accepts an OpenCode `ses_…` ID. Node 22 may warn that its SQLite module is experimental. [Details](docs/details.md#opencode) covers the OpenCode reader.
+Subagent sessions are left out, and Gemini CLI isn't supported yet. These formats are internal to each agent and can change between releases. `--agent opencode` covers both OpenCode versions, and `--session` also accepts an OpenCode `ses_…` ID. Node 22 may warn that its SQLite module is experimental. [Details](docs/details.md#opencode) covers the OpenCode reader, and [agy](docs/details.md#agy) the agy reader.
 
 ### Security
 

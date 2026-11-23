@@ -109,7 +109,7 @@ const processLeases = createLiveLeases();
 /** The browser watch server answers this with "Live Working is busy". */
 class LiveBusyError extends Error { readonly code = "LIVE_BUSY"; }
 /** Agents whose recorded turns Live can follow (createLiveTurnProjector; OpenCode: createOpenCodeLiveSource). */
-const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi", "codex", "opencode"]);
+const LIVE_AGENTS: ReadonlySet<AgentKind> = new Set(["claude", "pi", "codex", "opencode", "agy"]);
 const followsLive = (agent: AgentKind | undefined) => agent !== undefined && LIVE_AGENTS.has(agent);
 const liveSourceFor = (monitor: Pick<SessionMonitor, "onRecord">, session: { id: string; path: string; agent?: AgentKind }) =>
 	session.agent === "opencode" ? createOpenCodeLiveSource(session) : createLiveSource(monitor, session);
@@ -161,7 +161,7 @@ export function createLiveSource(monitor: Pick<SessionMonitor, "onRecord">, sess
 					if (attempt >= LIVE_READ_ATTEMPTS) throw new Error("Recorded activity is arriving faster than it can be read; try again shortly.");
 					overflow = false; pendingBytes = 0; continue;
 				}
-				const projector = createLiveTurnProjector(session.agent ?? "claude", { partialStart: read.startsMidway });
+				const projector = createLiveTurnProjector(session.agent ?? "claude", { partialStart: read.startsMidway, sessionPath: session.path });
 				const loadedAt = Date.now();
 				for (const record of read.records) projector.push(record, loadedAt, true);
 				end = read.end;
@@ -465,7 +465,7 @@ async function openMonitor(options: CommonOptions & { sessionPath?: string; sess
 		} else {
 			const path = await realpath(resolve(options.sessionPath));
 			const agent = options.sessionAgent ?? await detectAgent(path) ?? (options.agents?.length === 1 ? options.agents[0] : null);
-			if (!agent) throw new Error(`Could not tell which agent wrote ${path}; pass --agent claude|codex|pi.`);
+			if (!agent) throw new Error(`Could not tell which agent wrote ${path}; pass --agent claude|codex|pi|agy.`);
 			if (agent === "opencode") throw new Error("Use --session ses_… for OpenCode, with --opencode-db for a custom database.");
 			sessionPaths = [{ agent, path }];
 		}

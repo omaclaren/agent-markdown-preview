@@ -7,7 +7,7 @@ import { createTurnDetails, TURN_EVENT_LIMIT, TURN_TOTAL_LIMIT } from "./shared/
 import { TURN_READ_BYTES, TURN_RECORD_BYTES } from "./shared/read-turn-details.js";
 
 type Row = Record<string, any>;
-interface Database {
+export interface Database {
 	prepare(sql: string): { all(...params: (string | number)[]): Row[]; get(...params: (string | number)[]): Row | undefined };
 	exec(sql: string): unknown;
 	close(): void;
@@ -98,7 +98,7 @@ export interface OpenCodeLiveRead {
 /** Rows read per Live turn; a longer turn shows its latest activity. */
 const LIVE_ROWS = 250;
 
-async function openReadOnly(path: string): Promise<Database> {
+export async function openReadOnly(path: string, history = "OpenCode history"): Promise<Database> {
 	let db: Database;
 	if (process.versions.bun) {
 		// Variable import keeps the optional Bun module out of Node's resolution.
@@ -109,7 +109,7 @@ async function openReadOnly(path: string): Promise<Database> {
 		let sqlite: typeof import("node:sqlite");
 		const module = "node:sqlite";
 		try { sqlite = await import(module); }
-		catch { throw new Error("OpenCode history needs Node 22.13+ (node:sqlite) or Bun (bun:sqlite)."); }
+		catch { throw new Error(`${history} needs Node 22.13+ (node:sqlite) or Bun (bun:sqlite).`); }
 		db = new sqlite.DatabaseSync(path, { readOnly: true }) as Database;
 	}
 	try { db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 50;"); }

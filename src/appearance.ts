@@ -54,7 +54,7 @@ export function parseAgentTheme(value: string): [AgentKind, string] {
  const separator = value.indexOf("=");
  const agent = value.slice(0, separator), theme = value.slice(separator + 1);
  if (separator < 1 || !(AGENTS as readonly string[]).includes(agent) || !theme.trim() || theme === "agent") {
-  throw new Error("--agent-theme needs agent=theme, e.g. pi=pi-studio (claude, codex, pi or opencode; no recursive agent theme).");
+  throw new Error("--agent-theme needs agent=theme, e.g. pi=pi-studio (claude, codex, pi, opencode or agy; no recursive agent theme).");
  }
  return [agent as AgentKind, theme];
 }
@@ -74,7 +74,7 @@ export function resolveTheme(name = "agent", appearance?: Appearance, overrides:
  }
  if (name === "agent") {
   const mode = appearance ?? "system";
-  return { ...pair("neutral", mode), agentThemes: Object.fromEntries(AGENTS.map(agent => [agent, Object.hasOwn(overrides, agent) ? resolveTheme(overrides[agent]!, appearance) : pair(agent, mode)])) as Record<AgentKind, PageTheme> };
+  return { ...pair("neutral", mode), agentThemes: Object.fromEntries(AGENTS.map(agent => [agent, Object.hasOwn(overrides, agent) ? resolveTheme(overrides[agent]!, appearance) : pair(agent === "agy" ? "neutral" : agent, mode)])) as Record<AgentKind, PageTheme> };
  }
  if (name === "auto" || name === "light" || name === "dark") return pair("legacy", appearance ?? (name === "auto" ? "system" : name));
  const match = /^(neutral|claude|codex|opencode|pi|pi-studio)(?:-(light|dark))?$/.exec(name);
