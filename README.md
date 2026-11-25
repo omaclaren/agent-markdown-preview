@@ -100,6 +100,8 @@ The index lists sessions active in the last three days, up to eight per agent, w
 
 A preview shows the final response of each turn: the text the agent writes after its last tool call. It starts with the session's last 10 responses and keeps up to 20. Step through them with **Previous**, **Next** and **Latest** in the **current/total ▾** counter menu, or with **Option/Alt+Left/Right** (add **Shift** for the oldest or latest). Press **?** for a list of keyboard shortcuts, or choose **Keyboard shortcuts** in the counter menu. On an older response the page stays put and marks **Latest (new)** when something arrives. **All sessions (merged)** shows the latest response from any session in the directory. A file preview adds a version each time the file changes and keeps your reading position.
 
+To keep a response, choose **Export HTML** in the counter menu. It downloads one HTML file of the response as shown, which opens without the preview: local images are copied in, and scripts and the preview's controls are left out. Links to local files become plain text, and embedded files such as multi-page PDFs are left out. Remote images, and the fonts of equations drawn by the MathJax fallback, still load from the web. **Print / PDF** opens the browser's print dialog, where you can also save a PDF. Both are on a response's Preview, not on Working.
+
 `--all-projects` (`-a` or `--all`) groups sessions by folder, each with its own merged preview, and follows up to 64 sessions in total. It cannot be combined with `--cwd`, `--session`, a file argument or `--merged`.
 
 ![Cross-project session index](screenshots/all-projects.png)
